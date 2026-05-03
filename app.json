@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Doublons photos",
+    "slug": "organisateur-android",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0f1117",
+    "primaryColor": "#6c5ce7",
+    "assetBundlePatterns": ["**/*"],
+    "updates": {
+      "enabled": false,
+      "checkAutomatically": "NEVER"
+    },
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.organisateur.doublons",
+      "permissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_EXTERNAL_STORAGE"
+      ],
+      "blockedPermissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "L'application a besoin d'acceder a tes photos pour detecter les doublons.",
+          "savePhotosPermission": "L'application a besoin d'acceder a tes photos pour detecter les doublons.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ]
+    ]
+  }
+}
