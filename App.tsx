@@ -43,6 +43,8 @@ import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { inflate } from 'pako';
 
 // ============================================================================
 // Types & constantes
@@ -70,6 +72,7 @@ interface DupGroup {
   hash: string;
   items: AssetItem[];
   totalRecoverable: number; // bytes recuperables si on supprime tous sauf le plus gros
+  kind: 'exact' | 'quasi'; // V2.1 : exact = byte-identique, quasi = aHash similar
 }
 
 const COLORS = {
@@ -375,7 +378,7 @@ async function verifyGroup(
     if (items.length < 2) continue;
     items.sort((a, b) => b.fileSize - a.fileSize);
     const totalRec = items.slice(1).reduce((s, x) => s + x.fileSize, 0);
-    out.push({ hash: group.hash, items, totalRecoverable: totalRec });
+    out.push({ hash: group.hash, items, totalRecoverable: totalRec, kind: 'exact' });
   }
   return out;
 }
@@ -399,6 +402,286 @@ async function verifyAllGroups(
   return verified;
 }
 
+// ============================================================================
+// Quasi-doublons via aHash (V2.1) — pour les screenshots avec timestamp
+// different, recompressions WhatsApp, exports HEIC/JPG, etc.
+// ============================================================================
+// Strategie : on resize chaque image en 8x8 pixels grayscale via
+// expo-image-manipulator, on decode le PNG en JS pur, on calcule un hash
+// 64-bit via la moyenne (aHash). 2 images visuellement identiques produisent
+// des hashes a distance de Hamming faible (< 5 typiquement) meme si les
+// bytes du fichier diffèrent (compression, codec, timestamp).
+
+function b64ToBytes(b64: string): Uint8Array {
+  // RN 0.74 expose globalement atob.
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function paethPredictor(a: number, b: number, c: number): number {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+interface DecodedPng {
+  width: number;
+  height: number;
+  pixels: Uint8Array;
+  bytesPerPixel: number;
+  colorType: number;
+}
+
+// Decoder PNG minimal : signature, IHDR, IDAT (concat + zlib inflate),
+// unfilter (5 filtres standards). Suffisant pour ce qu'expo-image-manipulator
+// produit en sortie.
+function decodePng(bytes: Uint8Array): DecodedPng {
+  const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== SIG[i]) throw new Error('Not a PNG');
+  }
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks: Uint8Array[] = [];
+
+  let pos = 8;
+  while (pos < bytes.length) {
+    const len =
+      (bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3];
+    pos += 4;
+    const type = String.fromCharCode(
+      bytes[pos],
+      bytes[pos + 1],
+      bytes[pos + 2],
+      bytes[pos + 3]
+    );
+    pos += 4;
+    const data = bytes.subarray(pos, pos + len);
+    pos += len + 4;
+
+    if (type === 'IHDR') {
+      width = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+      height = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === 'IDAT') {
+      idatChunks.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+  }
+
+  if (bitDepth !== 8) throw new Error('PNG bitDepth ' + bitDepth + ' unsupported');
+
+  const channels =
+    colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 6 ? 4 : -1;
+  if (channels < 0) throw new Error('PNG colorType ' + colorType + ' unsupported');
+
+  let totalIdat = 0;
+  for (const c of idatChunks) totalIdat += c.length;
+  const compressed = new Uint8Array(totalIdat);
+  let off = 0;
+  for (const c of idatChunks) {
+    compressed.set(c, off);
+    off += c.length;
+  }
+  const filtered = inflate(compressed);
+
+  const stride = width * channels;
+  const pixels = new Uint8Array(height * stride);
+  for (let y = 0; y < height; y++) {
+    const filterType = filtered[y * (stride + 1)];
+    const rowStart = y * (stride + 1) + 1;
+    const outStart = y * stride;
+    for (let x = 0; x < stride; x++) {
+      const filt = filtered[rowStart + x];
+      const left = x >= channels ? pixels[outStart + x - channels] : 0;
+      const up = y > 0 ? pixels[outStart - stride + x] : 0;
+      const upLeft =
+        y > 0 && x >= channels ? pixels[outStart - stride + x - channels] : 0;
+      let val = 0;
+      switch (filterType) {
+        case 0:
+          val = filt;
+          break;
+        case 1:
+          val = (filt + left) & 0xff;
+          break;
+        case 2:
+          val = (filt + up) & 0xff;
+          break;
+        case 3:
+          val = (filt + ((left + up) >> 1)) & 0xff;
+          break;
+        case 4:
+          val = (filt + paethPredictor(left, up, upLeft)) & 0xff;
+          break;
+        default:
+          throw new Error('Unknown PNG filter ' + filterType);
+      }
+      pixels[outStart + x] = val;
+    }
+  }
+
+  return { width, height, pixels, bytesPerPixel: channels, colorType };
+}
+
+// Calcule un aHash 64-bit a partir d'une image. Renvoie null en cas d'erreur.
+async function computeAHash(uri: string): Promise<bigint | null> {
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 8, height: 8 } }],
+      { compress: 1, format: ImageManipulator.SaveFormat.PNG, base64: true }
+    );
+    if (!result.base64) return null;
+    const png = decodePng(b64ToBytes(result.base64));
+    if (png.width !== 8 || png.height !== 8) return null;
+
+    const gray = new Float32Array(64);
+    const { pixels, bytesPerPixel, colorType } = png;
+    for (let i = 0; i < 64; i++) {
+      const off = i * bytesPerPixel;
+      let g = 0;
+      if (colorType === 0 || colorType === 4) {
+        g = pixels[off]; // grayscale
+      } else {
+        // RGB(A) -> luminance perceptuelle
+        g =
+          0.299 * pixels[off] +
+          0.587 * pixels[off + 1] +
+          0.114 * pixels[off + 2];
+      }
+      gray[i] = g;
+    }
+    let sum = 0;
+    for (let i = 0; i < 64; i++) sum += gray[i];
+    const mean = sum / 64;
+
+    let hash = 0n;
+    for (let i = 0; i < 64; i++) {
+      if (gray[i] > mean) hash |= 1n << BigInt(i);
+    }
+    return hash;
+  } catch {
+    return null;
+  }
+}
+
+function hammingDistance(a: bigint, b: bigint): number {
+  let diff = a ^ b;
+  let count = 0;
+  while (diff !== 0n) {
+    if ((diff & 1n) !== 0n) count++;
+    diff >>= 1n;
+  }
+  return count;
+}
+
+// Heuristique : un screenshot a "screenshot" dans son nom ou son uri (le
+// dossier Screenshots sur Samsung). On l'utilise pour regler un threshold
+// Hamming plus permissif (les screenshots changent tres peu entre 2 instants).
+function isScreenshot(item: AssetItem): boolean {
+  const s = (item.filename || '') + ' ' + (item.uri || '');
+  return /screen.?shot/i.test(s);
+}
+
+async function computeAHashes(
+  items: AssetItem[],
+  onProgress: ProgressCb,
+  cancelRef: { cancelled: boolean }
+): Promise<Map<string, bigint>> {
+  const out = new Map<string, bigint>();
+  const BATCH = 4; // I/O + decode JS, on garde modeste
+  for (let i = 0; i < items.length; i += BATCH) {
+    if (cancelRef.cancelled) break;
+    const batch = items.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map((it) => computeAHash(it.uri)));
+    for (let j = 0; j < batch.length; j++) {
+      const h = results[j];
+      if (h !== null) out.set(batch[j].id, h);
+    }
+    const done = Math.min(i + BATCH, items.length);
+    onProgress(done, items.length, `Quasi-doublons ${done} / ${items.length}`);
+  }
+  return out;
+}
+
+// Group items by aHash similarity. Threshold normal pour photos, plus
+// permissif pour les screenshots.
+const QUASI_THRESHOLD_PHOTO = 5;
+const QUASI_THRESHOLD_SCREENSHOT = 7;
+
+function clusterByAHash(
+  items: AssetItem[],
+  hashes: Map<string, bigint>
+): AssetItem[][] {
+  const clusters: AssetItem[][] = [];
+  for (const item of items) {
+    const h = hashes.get(item.id);
+    if (h === undefined) continue;
+    const t = isScreenshot(item) ? QUASI_THRESHOLD_SCREENSHOT : QUASI_THRESHOLD_PHOTO;
+    let placed = false;
+    for (const cluster of clusters) {
+      const repHash = hashes.get(cluster[0].id);
+      if (repHash !== undefined && hammingDistance(h, repHash) <= t) {
+        cluster.push(item);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) clusters.push([item]);
+  }
+  return clusters;
+}
+
+// Pour chaque cluster aHash >= 2 :
+//  - si tous les items du cluster sont deja groupes EXACTEMENT ensemble,
+//    on n'ajoute rien (deja affiche par le pipeline exact).
+//  - sinon on ajoute le cluster comme groupe 'quasi'.
+function buildQuasiGroups(
+  clusters: AssetItem[][],
+  exactGroups: DupGroup[],
+  hashes: Map<string, bigint>
+): DupGroup[] {
+  // Map item.id -> exactGroup index (ou -1)
+  const exactGroupOf = new Map<string, number>();
+  exactGroups.forEach((g, idx) => {
+    for (const it of g.items) exactGroupOf.set(it.id, idx);
+  });
+
+  const out: DupGroup[] = [];
+  for (const cluster of clusters) {
+    if (cluster.length < 2) continue;
+    // Si tous les items du cluster sont dans le meme exact group, skip.
+    const exactIdxs = new Set(
+      cluster.map((it) => exactGroupOf.get(it.id) ?? -1)
+    );
+    if (exactIdxs.size === 1) {
+      const onlyIdx = exactIdxs.values().next().value;
+      if (onlyIdx !== undefined && onlyIdx >= 0) continue;
+    }
+    cluster.sort((a, b) => b.fileSize - a.fileSize);
+    const totalRec = cluster.slice(1).reduce((s, x) => s + x.fileSize, 0);
+    const repHash = hashes.get(cluster[0].id);
+    out.push({
+      hash: '~' + (repHash !== undefined ? repHash.toString(16) : '?'),
+      items: cluster,
+      totalRecoverable: totalRec,
+      kind: 'quasi',
+    });
+  }
+  return out;
+}
+
 function groupByHash(items: AssetItem[]): DupGroup[] {
   const buckets = new Map<string, AssetItem[]>();
   for (const it of items) {
@@ -413,7 +696,7 @@ function groupByHash(items: AssetItem[]): DupGroup[] {
     // Tri par taille decroissante (le + gros d'abord = la "meilleure copie")
     arr.sort((a, b) => b.fileSize - a.fileSize);
     const totalRecoverable = arr.slice(1).reduce((s, x) => s + x.fileSize, 0);
-    groups.push({ hash, items: arr, totalRecoverable });
+    groups.push({ hash, items: arr, totalRecoverable, kind: 'exact' });
   }
   // Tri des groupes par espace recuperable decroissant
   groups.sort((a, b) => b.totalRecoverable - a.totalRecoverable);
@@ -502,12 +785,16 @@ function PermissionScreen({ onGranted }: { onGranted: () => void }) {
 function HomeScreen({
   includeVideos,
   setIncludeVideos,
+  includePHash,
+  setIncludePHash,
   onScan,
   corbeilleCount,
   onOpenCorbeille,
 }: {
   includeVideos: boolean;
   setIncludeVideos: (v: boolean) => void;
+  includePHash: boolean;
+  setIncludePHash: (v: boolean) => void;
   onScan: () => void;
   corbeilleCount: number;
   onOpenCorbeille: () => void;
@@ -539,6 +826,22 @@ function HomeScreen({
             thumbColor="#fff"
           />
         </View>
+        <View style={[styles.optionRow, { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: COLORS.border }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.optionLabel}>Quasi-doublons (pHash)</Text>
+            <Text style={styles.optionHelp}>
+              {includePHash
+                ? 'Detecte aussi les screenshots a temps different, recompressions WhatsApp, HEIC/JPG.'
+                : 'Detecte uniquement les copies strictement identiques (rapide).'}
+            </Text>
+          </View>
+          <Switch
+            value={includePHash}
+            onValueChange={setIncludePHash}
+            trackColor={{ false: COLORS.border, true: COLORS.accent }}
+            thumbColor="#fff"
+          />
+        </View>
       </View>
 
       <TouchableOpacity style={styles.bigBtn} onPress={onScan}>
@@ -561,7 +864,7 @@ function HomeScreen({
         </TouchableOpacity>
       )}
 
-      <Text style={styles.footer}>v2.0.1  ·  100% local, aucune donnee envoyee en ligne</Text>
+      <Text style={styles.footer}>v2.1.0  ·  100% local, aucune donnee envoyee en ligne</Text>
     </View>
   );
 }
@@ -1150,9 +1453,21 @@ function ResultsScreen({
         removeClippedSubviews
         renderItem={({ item: row }) =>
           row.kind === 'header' ? (
-            <Text style={[styles.groupHeader, styles.groupHeaderRow]}>
-              {row.group.items.length} copies  ·  {fmtSize(row.group.totalRecoverable)} si on garde le + gros
-            </Text>
+            <View style={styles.groupHeaderRow}>
+              <Text style={styles.groupHeader}>
+                {row.group.items.length} copies  ·  {fmtSize(row.group.totalRecoverable)} si on garde le + gros
+              </Text>
+              <View
+                style={[
+                  styles.groupKindBadge,
+                  row.group.kind === 'quasi' ? styles.groupKindQuasi : styles.groupKindExact,
+                ]}
+              >
+                <Text style={styles.groupKindText}>
+                  {row.group.kind === 'quasi' ? 'QUASI' : 'EXACT'}
+                </Text>
+              </View>
+            </View>
           ) : (
             <ResultItemRowMemo
               item={row.item}
@@ -1200,6 +1515,9 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
   // Defaut : photos ET videos (l'utilisateur peut decocher s'il ne veut que les photos)
   const [includeVideos, setIncludeVideos] = useState(true);
+  // V2.1 : pHash/aHash pour detecter les quasi-doublons (compressions
+  // WhatsApp, HEIC<->JPG, screenshots avec timestamp different).
+  const [includePHash, setIncludePHash] = useState(true);
   const [progress, setProgress] = useState({ current: 0, total: 0, label: 'Initialisation...' });
   const [groups, setGroups] = useState<DupGroup[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -1321,13 +1639,36 @@ export default function App() {
         setScreen('albums');
         return;
       }
-      setGroups(verified);
+
+      // V2.1 : analyse aHash (perceptual) pour les quasi-doublons.
+      // On la fait sur tous les hashed items, pas juste les non-exacts, pour
+      // pouvoir regrouper un fichier exact + ses quasi-equivalents (ex: jpg
+      // recompresse via WhatsApp en plus de la copie exacte).
+      let quasiGroups: DupGroup[] = [];
+      if (includePHash) {
+        setProgress({
+          current: 0,
+          total: hashed.length,
+          label: `Quasi-doublons 0 / ${hashed.length}`,
+        });
+        const aHashes = await computeAHashes(hashed, onProg, scanCancelRef);
+        if (scanCancelRef.cancelled) {
+          setScreen('albums');
+          return;
+        }
+        const clusters = clusterByAHash(hashed, aHashes);
+        quasiGroups = buildQuasiGroups(clusters, verified, aHashes);
+      }
+
+      const merged = [...verified, ...quasiGroups];
+      merged.sort((a, b) => b.totalRecoverable - a.totalRecoverable);
+      setGroups(merged);
       setScreen('results');
     } catch (e: any) {
       Alert.alert('Erreur', `Le scan a echoue : ${e?.message || e}`);
       setScreen('albums');
     }
-  }, [includeVideos, selectedAlbums, scanCancelRef, deletedIds]);
+  }, [includeVideos, includePHash, selectedAlbums, scanCancelRef, deletedIds]);
 
   const onCancelScan = useCallback(() => {
     scanCancelRef.cancelled = true;
@@ -1485,6 +1826,8 @@ export default function App() {
     <HomeScreen
       includeVideos={includeVideos}
       setIncludeVideos={setIncludeVideos}
+      includePHash={includePHash}
+      setIncludePHash={setIncludePHash}
       onScan={onOpenAlbums}
       corbeilleCount={corbeille.length}
       onOpenCorbeille={() => setScreen('corbeille')}
@@ -1634,6 +1977,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginTop: 8,
     marginBottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  groupKindBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  groupKindExact: {
+    backgroundColor: COLORS.accent,
+  },
+  groupKindQuasi: {
+    backgroundColor: COLORS.warn,
+  },
+  groupKindText: {
+    color: '#000',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   fileRow: {
     flexDirection: 'row',
