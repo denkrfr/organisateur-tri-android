@@ -36,6 +36,8 @@ import {
   Switch,
   Pressable,
   Platform,
+  Linking,
+  AppState,
 } from 'react-native';
 import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
@@ -252,19 +254,37 @@ function groupByHash(items: AssetItem[]): DupGroup[] {
 // ============================================================================
 function PermissionScreen({ onGranted }: { onGranted: () => void }) {
   const [requesting, setRequesting] = useState(false);
+  const [partial, setPartial] = useState(false);
 
   const ask = async () => {
     setRequesting(true);
-    const { status } = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
+    const result = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
     setRequesting(false);
-    if (status === 'granted') {
+
+    const isFull =
+      result.status === 'granted' &&
+      (result as any).accessPrivileges !== 'limited';
+    const isLimited =
+      result.status === 'granted' &&
+      (result as any).accessPrivileges === 'limited';
+
+    if (isFull) {
       onGranted();
+    } else if (isLimited) {
+      // Acces partiel (Android 14 "Photos selectionnees") : on ne peut pas
+      // scanner toute la galerie. On invite l'utilisateur a passer en
+      // "Autoriser toutes" via les parametres systeme.
+      setPartial(true);
     } else {
       Alert.alert(
         'Permission refusee',
-        "Sans acces aux photos, l'app ne peut pas detecter les doublons. Tu peux changer ce reglage dans les parametres systeme."
+        "Sans acces aux photos, l'app ne peut pas detecter les doublons. Ouvre les parametres systeme pour autoriser l'acces."
       );
     }
+  };
+
+  const openSettings = () => {
+    Linking.openSettings();
   };
 
   return (
@@ -273,16 +293,33 @@ function PermissionScreen({ onGranted }: { onGranted: () => void }) {
         <Text style={styles.permIcon}>📁</Text>
         <Text style={styles.title}>Doublons photos</Text>
         <Text style={styles.subtitle}>
-          Pour detecter les doublons, l'app a besoin d'acceder a tes photos.
+          Pour detecter les doublons, l'app a besoin d'acceder a {'\n'}toutes tes photos.
         </Text>
         <Text style={styles.permPrivacy}>
           Tout reste sur ton telephone. Aucune donnee n'est envoyee sur internet.
         </Text>
-        <TouchableOpacity style={styles.primaryBtn} onPress={ask} disabled={requesting}>
-          <Text style={styles.primaryBtnText}>
-            {requesting ? 'Demande en cours...' : 'Autoriser l\'acces'}
-          </Text>
-        </TouchableOpacity>
+
+        {partial ? (
+          <>
+            <View style={[styles.corbeilleNotice, { marginBottom: 18 }]}>
+              <Text style={styles.corbeilleNoticeText}>
+                Tu as autorise un acces partiel (photos selectionnees). Pour detecter les doublons sur toute ta galerie, choisis "Autoriser toutes les photos et videos" dans les parametres.
+              </Text>
+            </View>
+            <TouchableOpacity style={styles.primaryBtn} onPress={openSettings}>
+              <Text style={styles.primaryBtnText}>Ouvrir les parametres</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={ask} disabled={requesting}>
+              <Text style={styles.secondaryBtnText}>Reessayer</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <TouchableOpacity style={styles.primaryBtn} onPress={ask} disabled={requesting}>
+            <Text style={styles.primaryBtnText}>
+              {requesting ? 'Demande en cours...' : 'Autoriser l\'acces'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -784,7 +821,11 @@ function ResultsScreen({
 // Root component
 // ============================================================================
 export default function App() {
-  const [permission, requestPermission] = MediaLibrary.usePermissions();
+  // On gere l'etat de permission manuellement au lieu de usePermissions() :
+  // sur Android 14, le hook expo-media-library ne se synchronise pas
+  // toujours apres requestPermissionsAsync, ce qui laissait l'app bloquee
+  // sur l'ecran de permission meme apres autorisation.
+  const [permGranted, setPermGranted] = useState<boolean | null>(null);
   const [screen, setScreen] = useState<Screen>('home');
   // Defaut : photos ET videos (l'utilisateur peut decocher s'il ne veut que les photos)
   const [includeVideos, setIncludeVideos] = useState(true);
@@ -796,15 +837,28 @@ export default function App() {
   // envoyes au systeme. Securite supplementaire avant la suppression Android.
   const [corbeille, setCorbeille] = useState<AssetItem[]>([]);
 
-  // Met a jour l'ecran initial selon la permission
-  useEffect(() => {
-    if (permission === null) return;
-    if (permission.status !== 'granted') {
+  // Re-check de la permission au mount + a chaque retour sur l'app (utile
+  // si l'utilisateur a change la permission depuis les parametres systeme).
+  const refreshPermission = useCallback(async () => {
+    const result = await MediaLibrary.getPermissionsAsync(false, ['photo', 'video']);
+    const granted =
+      result.status === 'granted' &&
+      (result as any).accessPrivileges !== 'limited';
+    setPermGranted(granted);
+    if (!granted) {
       setScreen('permission');
     } else if (screen === 'permission') {
       setScreen('home');
     }
-  }, [permission, screen]);
+  }, [screen]);
+
+  useEffect(() => {
+    refreshPermission();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refreshPermission();
+    });
+    return () => sub.remove();
+  }, [refreshPermission]);
 
   const onScan = useCallback(async () => {
     setScreen('scan');
@@ -917,8 +971,26 @@ export default function App() {
     []
   );
 
-  if (screen === 'permission' || permission === null) {
-    return <PermissionScreen onGranted={() => setScreen('home')} />;
+  // Loading initial : permGranted est null tant que getPermissionsAsync
+  // n'a pas repondu. Affiche un spinner court pour eviter de flasher l'ecran
+  // de permission a tort.
+  if (permGranted === null) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color={COLORS.accent2} />
+      </View>
+    );
+  }
+
+  if (!permGranted || screen === 'permission') {
+    return (
+      <PermissionScreen
+        onGranted={() => {
+          setPermGranted(true);
+          setScreen('home');
+        }}
+      />
+    );
   }
 
   if (screen === 'scan') {
