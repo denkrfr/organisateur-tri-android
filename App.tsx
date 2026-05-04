@@ -47,7 +47,13 @@ import * as Crypto from 'expo-crypto';
 // ============================================================================
 // Types & constantes
 // ============================================================================
-type Screen = 'permission' | 'home' | 'scan' | 'results' | 'corbeille';
+type Screen = 'permission' | 'home' | 'albums' | 'scan' | 'results' | 'corbeille';
+
+interface AlbumItem {
+  id: string;
+  title: string;
+  assetCount: number;
+}
 
 interface AssetItem {
   id: string;
@@ -133,49 +139,84 @@ function fmtSize(bytes: number): string {
 // ============================================================================
 type ProgressCb = (current: number, total: number, label: string) => void;
 
+// Liste les albums (= dossiers de la galerie : DCIM, WhatsApp, etc.) avec
+// le nombre d'assets de chaque (photos+videos pour pouvoir choisir lesquels
+// scanner). On ignore les smart albums pour rester aligne avec les vrais
+// dossiers du systeme de fichiers.
+async function fetchAllAlbums(): Promise<AlbumItem[]> {
+  const albums = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: false });
+  const items: AlbumItem[] = albums
+    .map((a) => ({ id: a.id, title: a.title, assetCount: a.assetCount }))
+    .filter((a) => a.assetCount > 0);
+  // Tri par taille decroissante : les gros dossiers en premier
+  items.sort((a, b) => b.assetCount - a.assetCount);
+  return items;
+}
+
 async function fetchAllAssets(
   includeVideos: boolean,
+  selectedAlbumIds: string[] | null, // null = toute la galerie sans filtre
   onProgress: ProgressCb,
   cancelRef: { cancelled: boolean }
 ): Promise<AssetItem[]> {
   const assets: AssetItem[] = [];
-  let after: string | undefined = undefined;
+  const seenIds = new Set<string>(); // dedup au cas ou un asset est dans plusieurs albums
   const PAGE_SIZE = 500;
   const mediaTypes: MediaLibrary.MediaTypeValue[] = includeVideos
     ? ['photo', 'video']
     : ['photo'];
 
-  // 1er passage pour avoir le total approx (nb de photos sur le tel)
-  // On demande juste 1 element pour lire `totalCount`
-  const probe = await MediaLibrary.getAssetsAsync({
-    mediaType: mediaTypes,
-    first: 1,
-  });
-  const total = probe.totalCount;
-  onProgress(0, total, 'Recuperation de la liste...');
+  // Si selectedAlbumIds null on scanne sans filtre (= toute la galerie),
+  // sinon on enchaine les scans album par album.
+  const scopes: (string | undefined)[] =
+    selectedAlbumIds === null ? [undefined] : selectedAlbumIds;
 
-  while (true) {
-    if (cancelRef.cancelled) break;
-    const page = await MediaLibrary.getAssetsAsync({
+  // Total approx pour la progress bar : on probe chaque scope.
+  let totalEstimated = 0;
+  for (const albumId of scopes) {
+    if (cancelRef.cancelled) return assets;
+    const probe = await MediaLibrary.getAssetsAsync({
       mediaType: mediaTypes,
-      first: PAGE_SIZE,
-      after,
-      sortBy: [MediaLibrary.SortBy.creationTime],
+      first: 1,
+      ...(albumId ? { album: albumId } : {}),
     });
-    for (const a of page.assets) {
-      assets.push({
-        id: a.id,
-        uri: a.uri,
-        filename: a.filename,
-        fileSize: 0, // on remplira via getAssetInfoAsync
-        duration: a.duration ?? 0,
-        mediaType: a.mediaType,
-        createdAt: a.creationTime ?? 0,
+    totalEstimated += probe.totalCount;
+  }
+  onProgress(0, totalEstimated, 'Recuperation de la liste...');
+
+  for (const albumId of scopes) {
+    if (cancelRef.cancelled) break;
+    let after: string | undefined = undefined;
+    while (true) {
+      if (cancelRef.cancelled) break;
+      const page = await MediaLibrary.getAssetsAsync({
+        mediaType: mediaTypes,
+        first: PAGE_SIZE,
+        after,
+        sortBy: [MediaLibrary.SortBy.creationTime],
+        ...(albumId ? { album: albumId } : {}),
       });
+      for (const a of page.assets) {
+        if (seenIds.has(a.id)) continue;
+        seenIds.add(a.id);
+        assets.push({
+          id: a.id,
+          uri: a.uri,
+          filename: a.filename,
+          fileSize: 0, // on remplira via getAssetInfoAsync
+          duration: a.duration ?? 0,
+          mediaType: a.mediaType,
+          createdAt: a.creationTime ?? 0,
+        });
+      }
+      onProgress(
+        assets.length,
+        totalEstimated,
+        `Liste : ${assets.length} / ${totalEstimated}`
+      );
+      if (!page.hasNextPage) break;
+      after = page.endCursor;
     }
-    onProgress(assets.length, total, `Liste : ${assets.length} / ${total}`);
-    if (!page.hasNextPage) break;
-    after = page.endCursor;
   }
   return assets;
 }
@@ -391,6 +432,148 @@ function HomeScreen({
       )}
 
       <Text style={styles.footer}>v1.0  ·  100% local, aucune donnee envoyee en ligne</Text>
+    </View>
+  );
+}
+
+// ============================================================================
+// Albums screen : choisir les dossiers a scanner
+// ============================================================================
+function AlbumsScreen({
+  albums,
+  loading,
+  selected,
+  setSelected,
+  onLaunchScan,
+  onBack,
+}: {
+  albums: AlbumItem[];
+  loading: boolean;
+  selected: Set<string>;
+  setSelected: (s: Set<string>) => void;
+  onLaunchScan: () => void;
+  onBack: () => void;
+}) {
+  const totalSelectedAssets = useMemo(
+    () =>
+      albums
+        .filter((a) => selected.has(a.id))
+        .reduce((s, a) => s + a.assetCount, 0),
+    [albums, selected]
+  );
+
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+
+  const checkAll = () => setSelected(new Set(albums.map((a) => a.id)));
+  const checkNone = () => setSelected(new Set());
+
+  if (loading) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color={COLORS.accent2} />
+        <Text style={[styles.subtitle, { marginTop: 12 }]}>Chargement des dossiers...</Text>
+      </View>
+    );
+  }
+
+  if (albums.length === 0) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.emptyWrap}>
+          <Text style={styles.emptyIcon}>📂</Text>
+          <Text style={styles.title}>Aucun dossier trouve</Text>
+          <Text style={styles.subtitle}>
+            La galerie ne contient aucun album avec des photos.
+          </Text>
+          <TouchableOpacity style={styles.primaryBtn} onPress={onBack}>
+            <Text style={styles.primaryBtnText}>Retour</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.resultsHeader}>
+        <View style={styles.corbeilleHeaderRow}>
+          <Pressable onPress={onBack} hitSlop={12}>
+            <Text style={styles.backArrow}>‹</Text>
+          </Pressable>
+          <Text style={styles.title}>Choisir les dossiers</Text>
+          <View style={{ width: 24 }} />
+        </View>
+        <Text style={styles.subtitle}>
+          Coche les dossiers que tu veux scanner.{'\n'}
+          {selected.size} dossier(s) · {totalSelectedAssets} fichier(s) au total
+        </Text>
+        <View style={styles.resultsActions}>
+          <Pressable style={styles.smallBtn} onPress={checkAll}>
+            <Text style={styles.smallBtnText}>Tout cocher</Text>
+          </Pressable>
+          <Pressable style={styles.smallBtn} onPress={checkNone}>
+            <Text style={styles.smallBtnText}>Tout decocher</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <FlatList
+        data={albums}
+        keyExtractor={(a) => a.id}
+        contentContainerStyle={{ paddingBottom: 130 }}
+        renderItem={({ item }) => (
+          <Pressable
+            style={[
+              styles.fileRow,
+              { backgroundColor: COLORS.card, marginBottom: 8 },
+              selected.has(item.id) && styles.albumRowSelected,
+            ]}
+            onPress={() => toggle(item.id)}
+          >
+            <Text style={styles.albumIcon}>📁</Text>
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              <Text style={styles.fileName} numberOfLines={1}>
+                {item.title}
+              </Text>
+              <Text style={styles.fileSize}>{item.assetCount} fichier(s)</Text>
+            </View>
+            <View
+              style={[
+                styles.checkbox,
+                selected.has(item.id) && styles.checkboxAlbumOn,
+              ]}
+            >
+              {selected.has(item.id) && <Text style={styles.checkboxMark}>✓</Text>}
+            </View>
+          </Pressable>
+        )}
+      />
+
+      <View style={styles.bottomBar}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.bottomBarLine1}>
+            <Text style={[styles.bottomBarCount, { color: COLORS.accent2 }]}>
+              {selected.size}
+            </Text>{' '}
+            dossier(s) coche(s)
+          </Text>
+          <Text style={styles.bottomBarLine2}>
+            ~{totalSelectedAssets} fichier(s) a scanner
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.bigBtnInline, selected.size === 0 && styles.dangerBtnDisabled]}
+          disabled={selected.size === 0}
+          onPress={onLaunchScan}
+        >
+          <Text style={styles.bigBtnInlineText}>Lancer le scan</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -836,6 +1019,10 @@ export default function App() {
   // Corbeille interne : fichiers marques pour suppression mais pas encore
   // envoyes au systeme. Securite supplementaire avant la suppression Android.
   const [corbeille, setCorbeille] = useState<AssetItem[]>([]);
+  // Albums (= dossiers de la galerie) : liste + selection.
+  const [albums, setAlbums] = useState<AlbumItem[]>([]);
+  const [albumsLoading, setAlbumsLoading] = useState(false);
+  const [selectedAlbums, setSelectedAlbums] = useState<Set<string>>(new Set());
 
   // Re-check de la permission au mount + a chaque retour sur l'app (utile
   // si l'utilisateur a change la permission depuis les parametres systeme).
@@ -860,7 +1047,28 @@ export default function App() {
     return () => sub.remove();
   }, [refreshPermission]);
 
-  const onScan = useCallback(async () => {
+  // Charge la liste des albums et passe a l'ecran de selection.
+  const onOpenAlbums = useCallback(async () => {
+    setScreen('albums');
+    setAlbumsLoading(true);
+    try {
+      const list = await fetchAllAlbums();
+      setAlbums(list);
+      // Si rien n'a encore ete coche, on coche tout par defaut (= comportement
+      // initial de l'app).
+      setSelectedAlbums((prev) =>
+        prev.size === 0 ? new Set(list.map((a) => a.id)) : prev
+      );
+    } catch (e: any) {
+      Alert.alert('Erreur', `Impossible de lister les dossiers : ${e?.message || e}`);
+      setScreen('home');
+    } finally {
+      setAlbumsLoading(false);
+    }
+  }, []);
+
+  const onLaunchScan = useCallback(async () => {
+    const ids = Array.from(selectedAlbums);
     setScreen('scan');
     setProgress({ current: 0, total: 0, label: 'Recuperation de la liste...' });
     setGroups([]);
@@ -871,14 +1079,19 @@ export default function App() {
       const onProg: ProgressCb = (c, t, label) => {
         setProgress({ current: c, total: t, label });
       };
-      const assets = await fetchAllAssets(includeVideos, onProg, scanCancelRef);
+      const assets = await fetchAllAssets(
+        includeVideos,
+        ids.length > 0 ? ids : null,
+        onProg,
+        scanCancelRef
+      );
       if (scanCancelRef.cancelled) {
-        setScreen('home');
+        setScreen('albums');
         return;
       }
       const hashed = await hashAllAssets(assets, onProg, scanCancelRef);
       if (scanCancelRef.cancelled) {
-        setScreen('home');
+        setScreen('albums');
         return;
       }
       const grp = groupByHash(hashed);
@@ -886,9 +1099,9 @@ export default function App() {
       setScreen('results');
     } catch (e: any) {
       Alert.alert('Erreur', `Le scan a echoue : ${e?.message || e}`);
-      setScreen('home');
+      setScreen('albums');
     }
-  }, [includeVideos, scanCancelRef]);
+  }, [includeVideos, selectedAlbums, scanCancelRef]);
 
   const onCancelScan = useCallback(() => {
     scanCancelRef.cancelled = true;
@@ -993,6 +1206,19 @@ export default function App() {
     );
   }
 
+  if (screen === 'albums') {
+    return (
+      <AlbumsScreen
+        albums={albums}
+        loading={albumsLoading}
+        selected={selectedAlbums}
+        setSelected={setSelectedAlbums}
+        onLaunchScan={onLaunchScan}
+        onBack={() => setScreen('home')}
+      />
+    );
+  }
+
   if (screen === 'scan') {
     return <ScanScreen progress={progress} onCancel={onCancelScan} />;
   }
@@ -1026,7 +1252,7 @@ export default function App() {
     <HomeScreen
       includeVideos={includeVideos}
       setIncludeVideos={setIncludeVideos}
-      onScan={onScan}
+      onScan={onOpenAlbums}
       corbeilleCount={corbeille.length}
       onOpenCorbeille={() => setScreen('corbeille')}
     />
@@ -1178,6 +1404,18 @@ const styles = StyleSheet.create({
   },
   fileRowSelected: { borderColor: COLORS.danger, backgroundColor: '#2d1b1b' },
   fileRowFirst: {},
+  albumRowSelected: { borderColor: COLORS.accent, backgroundColor: '#1d1c30' },
+  albumIcon: { fontSize: 26, marginLeft: 4 },
+  checkboxAlbumOn: { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
+  bigBtnInline: {
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 22,
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bigBtnInlineText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   thumb: {
     width: 56,
     height: 56,
