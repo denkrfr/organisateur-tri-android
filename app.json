@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "Doublons photos",
+    "name": "Doublons photos V2",
     "slug": "organisateur-android",
     "owner": "dennu",
-    "version": "1.0.1",
+    "version": "2.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0f1117",
-    "primaryColor": "#6c5ce7",
+    "primaryColor": "#00b894",
     "splash": {
       "backgroundColor": "#0f1117",
       "resizeMode": "contain"
@@ -21,7 +21,7 @@
       "supportsTablet": false
     },
     "android": {
-      "package": "com.organisateur.doublons",
+      "package": "com.organisateur.doublons.v2",
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",

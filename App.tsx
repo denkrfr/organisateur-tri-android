@@ -80,8 +80,9 @@ const COLORS = {
   text:      '#e4e6f0',
   text2:     '#8b8fa3',
   text3:     '#5a5e70',
-  accent:    '#6c5ce7',
-  accent2:   '#a29bfe',
+  // V2 : couleur turquoise pour distinguer visuellement de la V1 (violet)
+  accent:    '#00b894',
+  accent2:   '#55efc4',
   danger:    '#ff6b6b',
   warn:      '#ffd43b',
   ok:        '#51cf66',
@@ -465,7 +466,7 @@ function HomeScreen({
         </TouchableOpacity>
       )}
 
-      <Text style={styles.footer}>v1.0  ·  100% local, aucune donnee envoyee en ligne</Text>
+      <Text style={styles.footer}>v2.0  ·  100% local, aucune donnee envoyee en ligne</Text>
     </View>
   );
 }
@@ -1017,7 +1018,13 @@ function ResultsScreen({
   return (
     <View style={styles.container}>
       <View style={styles.resultsHeader}>
-        <Text style={styles.title}>{groups.length} groupes de doublons</Text>
+        <View style={styles.corbeilleHeaderRow}>
+          <Pressable onPress={onBack} hitSlop={12}>
+            <Text style={styles.backArrow}>‹</Text>
+          </Pressable>
+          <Text style={styles.title}>{groups.length} groupes</Text>
+          <View style={{ width: 24 }} />
+        </View>
         <Text style={styles.subtitle}>
           {fmtSize(totalRecoverable)} recuperables au total
         </Text>
