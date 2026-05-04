@@ -90,6 +90,40 @@ const COLORS = {
 // On lit 16 KB au debut + 16 KB a la fin pour le quick-hash
 const QUICK_HASH_BYTES = 16 * 1024;
 
+// Sur Android 11+, MediaLibrary.deleteAssetsAsync ne supprime PAS vraiment les
+// fichiers : ils sont deplaces dans la corbeille systeme (.trash) avec un flag
+// IS_TRASHED=true, mais MediaStore continue de les retourner via getAssetsAsync.
+// Sans filtre on les re-detecte comme doublons au scan suivant.
+// On persiste donc localement les ids deja envoyes a la corbeille systeme,
+// et on les filtre au debut de chaque scan. Apres ~30 jours le fichier est
+// vraiment efface par Android, son id disparait alors de MediaStore et notre
+// liste ne fait plus rien pour cet id (taille negligeable de toute facon).
+const DELETED_IDS_FILE = FileSystem.documentDirectory + 'deleted_ids.json';
+
+async function loadDeletedIds(): Promise<Set<string>> {
+  try {
+    const info = await FileSystem.getInfoAsync(DELETED_IDS_FILE);
+    if (!info.exists) return new Set();
+    const text = await FileSystem.readAsStringAsync(DELETED_IDS_FILE);
+    const arr = JSON.parse(text);
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((x): x is string => typeof x === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
+async function saveDeletedIds(ids: Set<string>): Promise<void> {
+  try {
+    await FileSystem.writeAsStringAsync(
+      DELETED_IDS_FILE,
+      JSON.stringify(Array.from(ids))
+    );
+  } catch {
+    // best-effort : si l'ecriture echoue le filtre se fera au prochain run
+  }
+}
+
 // ============================================================================
 // Helpers : hashing
 // ============================================================================
@@ -1075,6 +1109,17 @@ export default function App() {
   const [albums, setAlbums] = useState<AlbumItem[]>([]);
   const [albumsLoading, setAlbumsLoading] = useState(false);
   const [selectedAlbums, setSelectedAlbums] = useState<Set<string>>(new Set());
+  // Ids deja envoyes a la corbeille systeme Android. Persiste sur disque pour
+  // survivre aux redemarrages. Filtre les scans pour ne pas re-detecter les
+  // fichiers en attente de suppression definitive (30j dans .trash).
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    (async () => {
+      const ids = await loadDeletedIds();
+      setDeletedIds(ids);
+    })();
+  }, []);
 
   // Re-check de la permission au mount + a chaque retour sur l'app (utile
   // si l'utilisateur a change la permission depuis les parametres systeme).
@@ -1131,7 +1176,7 @@ export default function App() {
       const onProg: ProgressCb = (c, t, label) => {
         setProgress({ current: c, total: t, label });
       };
-      const assets = await fetchAllAssets(
+      let assets = await fetchAllAssets(
         includeVideos,
         ids.length > 0 ? ids : null,
         onProg,
@@ -1140,6 +1185,17 @@ export default function App() {
       if (scanCancelRef.cancelled) {
         setScreen('albums');
         return;
+      }
+      // Filtre les assets deja envoyes a la corbeille systeme Android via
+      // une suppression definitive precedente. Sinon on les re-detecte
+      // comme doublons tant qu'Android n'a pas vraiment efface (~30j).
+      if (deletedIds.size > 0) {
+        const before = assets.length;
+        assets = assets.filter((a) => !deletedIds.has(a.id));
+        const skipped = before - assets.length;
+        if (skipped > 0) {
+          onProg(0, assets.length, `${skipped} fichier(s) en corbeille systeme ignore(s)`);
+        }
       }
       const hashed = await hashAllAssets(assets, onProg, scanCancelRef);
       if (scanCancelRef.cancelled) {
@@ -1153,7 +1209,7 @@ export default function App() {
       Alert.alert('Erreur', `Le scan a echoue : ${e?.message || e}`);
       setScreen('albums');
     }
-  }, [includeVideos, selectedAlbums, scanCancelRef]);
+  }, [includeVideos, selectedAlbums, scanCancelRef, deletedIds]);
 
   const onCancelScan = useCallback(() => {
     scanCancelRef.cancelled = true;
@@ -1226,6 +1282,13 @@ export default function App() {
         if (success) {
           const removed = new Set(ids);
           setCorbeille((prev) => prev.filter((it) => !removed.has(it.id)));
+          // Marque ces ids comme "envoyes a la corbeille systeme" et persiste
+          // sur disque, pour ne pas les re-detecter aux scans suivants tant
+          // qu'Android ne les a pas vraiment effaces (~30 jours).
+          const next = new Set(deletedIds);
+          for (const id of ids) next.add(id);
+          setDeletedIds(next);
+          saveDeletedIds(next); // best-effort, fire-and-forget
         }
         return success;
       } catch (e: any) {
@@ -1233,7 +1296,7 @@ export default function App() {
         return false;
       }
     },
-    []
+    [deletedIds]
   );
 
   // Loading initial : permGranted est null tant que getPermissionsAsync
