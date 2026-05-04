@@ -7,6 +7,10 @@
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0f1117",
     "primaryColor": "#6c5ce7",
+    "splash": {
+      "backgroundColor": "#0f1117",
+      "resizeMode": "contain"
+    },
     "assetBundlePatterns": ["**/*"],
     "updates": {
       "enabled": false,
