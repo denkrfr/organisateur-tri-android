@@ -747,6 +747,10 @@ function CorbeilleScreen({
         data={items}
         keyExtractor={(it) => it.id}
         contentContainerStyle={{ paddingBottom: 180 }}
+        initialNumToRender={12}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        removeClippedSubviews
         renderItem={({ item: it }) => (
           <Pressable
             style={[
@@ -760,7 +764,8 @@ function CorbeilleScreen({
               source={{ uri: it.uri }}
               style={styles.thumb}
               contentFit="cover"
-              cachePolicy="memory"
+              cachePolicy="disk"
+              recyclingKey={it.id}
               transition={120}
             />
             <View style={{ flex: 1, marginLeft: 10 }}>
@@ -828,6 +833,62 @@ function CorbeilleScreen({
 // ============================================================================
 // Results screen
 // ============================================================================
+// Pour eviter le freeze quand on a beaucoup de groupes, on aplatit la liste
+// en lignes (header / item / item / header / ...) et on laisse FlatList
+// virtualiser chaque ligne individuellement. Sinon, FlatList ne virtualise
+// que les groupes et chaque renderItem rend toutes les sous-images d'un coup
+// -> avec plusieurs centaines de Image en RAM via cachePolicy='memory',
+// l'UI thread se bloque -> ANR.
+type ResultRow =
+  | { kind: 'header'; group: DupGroup }
+  | { kind: 'item'; item: AssetItem; isFirst: boolean };
+
+function ResultItemRow({
+  item,
+  isFirst,
+  isSelected,
+  onToggle,
+}: {
+  item: AssetItem;
+  isFirst: boolean;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <Pressable
+      style={[
+        styles.fileRow,
+        { marginHorizontal: 12 },
+        isSelected && styles.fileRowSelected,
+      ]}
+      onPress={() => onToggle(item.id)}
+    >
+      <Image
+        source={{ uri: item.uri }}
+        style={styles.thumb}
+        contentFit="cover"
+        cachePolicy="disk"
+        recyclingKey={item.id}
+        transition={120}
+      />
+      <View style={{ flex: 1, marginLeft: 10 }}>
+        <Text style={styles.fileName} numberOfLines={1}>
+          {item.filename}
+        </Text>
+        <Text style={styles.fileSize}>
+          {fmtSize(item.fileSize)}
+          {isFirst && '   ·   le + gros'}
+        </Text>
+      </View>
+      <View style={[styles.checkbox, isSelected && styles.checkboxOn]}>
+        {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+      </View>
+    </Pressable>
+  );
+}
+
+const ResultItemRowMemo = React.memo(ResultItemRow);
+
 function ResultsScreen({
   groups,
   selected,
@@ -864,12 +925,26 @@ function ResultsScreen({
     [groups]
   );
 
-  const toggle = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
-  };
+  const flatRows = useMemo<ResultRow[]>(() => {
+    const rows: ResultRow[] = [];
+    for (const g of groups) {
+      rows.push({ kind: 'header', group: g });
+      g.items.forEach((it, idx) => {
+        rows.push({ kind: 'item', item: it, isFirst: idx === 0 });
+      });
+    }
+    return rows;
+  }, [groups]);
+
+  const toggle = useCallback(
+    (id: string) => {
+      const next = new Set(selected);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setSelected(next);
+    },
+    [selected, setSelected]
+  );
 
   const checkAllButFirst = () => {
     const next = new Set<string>();
@@ -928,52 +1003,29 @@ function ResultsScreen({
       </View>
 
       <FlatList
-        data={groups}
-        keyExtractor={(g) => g.hash}
+        data={flatRows}
+        keyExtractor={(r) =>
+          r.kind === 'header' ? `h-${r.group.hash}` : r.item.id
+        }
         contentContainerStyle={{ paddingBottom: 130 }}
-        renderItem={({ item }) => (
-          <View style={styles.groupCard}>
-            <Text style={styles.groupHeader}>
-              {item.items.length} copies  ·  {fmtSize(item.totalRecoverable)} si on garde le + gros
+        initialNumToRender={12}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        removeClippedSubviews
+        renderItem={({ item: row }) =>
+          row.kind === 'header' ? (
+            <Text style={[styles.groupHeader, styles.groupHeaderRow]}>
+              {row.group.items.length} copies  ·  {fmtSize(row.group.totalRecoverable)} si on garde le + gros
             </Text>
-            {item.items.map((it, idx) => (
-              <Pressable
-                key={it.id}
-                style={[
-                  styles.fileRow,
-                  selected.has(it.id) && styles.fileRowSelected,
-                  idx === 0 && styles.fileRowFirst,
-                ]}
-                onPress={() => toggle(it.id)}
-              >
-                <Image
-                  source={{ uri: it.uri }}
-                  style={styles.thumb}
-                  contentFit="cover"
-                  cachePolicy="memory"
-                  transition={120}
-                />
-                <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={styles.fileName} numberOfLines={1}>
-                    {it.filename}
-                  </Text>
-                  <Text style={styles.fileSize}>
-                    {fmtSize(it.fileSize)}
-                    {idx === 0 && '   ·   le + gros'}
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.checkbox,
-                    selected.has(it.id) && styles.checkboxOn,
-                  ]}
-                >
-                  {selected.has(it.id) && <Text style={styles.checkboxMark}>✓</Text>}
-                </View>
-              </Pressable>
-            ))}
-          </View>
-        )}
+          ) : (
+            <ResultItemRowMemo
+              item={row.item}
+              isFirst={row.isFirst}
+              isSelected={selected.has(row.item.id)}
+              onToggle={toggle}
+            />
+          )
+        }
       />
 
       <View style={styles.bottomBar}>
@@ -1391,6 +1443,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     marginBottom: 8,
+  },
+  groupHeaderRow: {
+    backgroundColor: COLORS.card,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginTop: 8,
+    marginBottom: 0,
   },
   fileRow: {
     flexDirection: 'row',
