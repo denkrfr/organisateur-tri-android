@@ -1,3 +1,4 @@
+```json
 {
   "expo": {
     "name": "Doublons photos",
@@ -42,6 +43,12 @@
           "isAccessMediaLocationEnabled": false
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "389adb1e-e194-45df-b538-c2c5b69f80bb"
+      }
+    }
   }
 }
+```
