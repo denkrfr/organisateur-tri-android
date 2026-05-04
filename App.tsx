@@ -304,6 +304,101 @@ async function hashAllAssets(
   return out;
 }
 
+// ============================================================================
+// Verification byte-by-byte (V2) — securite Czkawka-style
+// ============================================================================
+// Le quick-hash (16 KB head + 16 KB tail + size) est tres fiable mais peut
+// theoriquement collisionner sur 2 photos prises en rafale au meme moment et
+// au meme byte de taille. Cette verif lit les fichiers en entier par chunks
+// et confirme que les bytes sont strictement identiques. Apres ca, taux de
+// faux positifs = 0 sur les doublons exacts.
+
+const VERIFY_CHUNK_BYTES = 1024 * 1024; // 1 Mo par chunk
+
+async function filesAreIdentical(
+  uriA: string,
+  uriB: string,
+  size: number,
+  cancelRef: { cancelled: boolean }
+): Promise<boolean> {
+  for (let pos = 0; pos < size; pos += VERIFY_CHUNK_BYTES) {
+    if (cancelRef.cancelled) return false;
+    const len = Math.min(VERIFY_CHUNK_BYTES, size - pos);
+    try {
+      const [a, b] = await Promise.all([
+        FileSystem.readAsStringAsync(uriA, {
+          encoding: FileSystem.EncodingType.Base64,
+          position: pos,
+          length: len,
+        }),
+        FileSystem.readAsStringAsync(uriB, {
+          encoding: FileSystem.EncodingType.Base64,
+          position: pos,
+          length: len,
+        }),
+      ]);
+      if (a !== b) return false;
+    } catch {
+      // I/O error : on refuse de confirmer plutot que d'avoir un faux positif
+      return false;
+    }
+  }
+  return true;
+}
+
+// Pour un groupe candidat (meme quick-hash), repartit ses items en sous-groupes
+// par contenu reellement identique. Algorithme : pour chaque item, on essaie
+// de le placer dans un bucket existant (= meme contenu que le 1er du bucket),
+// sinon on cree un nouveau bucket. Au final on garde les buckets >= 2.
+async function verifyGroup(
+  group: DupGroup,
+  cancelRef: { cancelled: boolean }
+): Promise<DupGroup[]> {
+  if (group.items.length < 2) return [];
+
+  const buckets: AssetItem[][] = [];
+  for (const item of group.items) {
+    if (cancelRef.cancelled) break;
+    let placed = false;
+    for (const bucket of buckets) {
+      if (await filesAreIdentical(bucket[0].uri, item.uri, item.fileSize, cancelRef)) {
+        bucket.push(item);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) buckets.push([item]);
+  }
+
+  const out: DupGroup[] = [];
+  for (const items of buckets) {
+    if (items.length < 2) continue;
+    items.sort((a, b) => b.fileSize - a.fileSize);
+    const totalRec = items.slice(1).reduce((s, x) => s + x.fileSize, 0);
+    out.push({ hash: group.hash, items, totalRecoverable: totalRec });
+  }
+  return out;
+}
+
+async function verifyAllGroups(
+  groups: DupGroup[],
+  onProgress: ProgressCb,
+  cancelRef: { cancelled: boolean }
+): Promise<DupGroup[]> {
+  const verified: DupGroup[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    if (cancelRef.cancelled) break;
+    onProgress(i, groups.length, `Verification ${i + 1} / ${groups.length}`);
+    const sub = await verifyGroup(groups[i], cancelRef);
+    verified.push(...sub);
+  }
+  if (!cancelRef.cancelled) {
+    onProgress(groups.length, groups.length, `Verification ${groups.length} / ${groups.length}`);
+  }
+  verified.sort((a, b) => b.totalRecoverable - a.totalRecoverable);
+  return verified;
+}
+
 function groupByHash(items: AssetItem[]): DupGroup[] {
   const buckets = new Map<string, AssetItem[]>();
   for (const it of items) {
@@ -466,7 +561,7 @@ function HomeScreen({
         </TouchableOpacity>
       )}
 
-      <Text style={styles.footer}>v2.0  ·  100% local, aucune donnee envoyee en ligne</Text>
+      <Text style={styles.footer}>v2.0.1  ·  100% local, aucune donnee envoyee en ligne</Text>
     </View>
   );
 }
@@ -1209,8 +1304,24 @@ export default function App() {
         setScreen('albums');
         return;
       }
-      const grp = groupByHash(hashed);
-      setGroups(grp);
+      const candidates = groupByHash(hashed);
+      if (scanCancelRef.cancelled) {
+        setScreen('albums');
+        return;
+      }
+      // V2 : verification byte-by-byte sur les groupes candidats pour
+      // eliminer toute collision de quick-hash. Czkawka-style.
+      setProgress({
+        current: 0,
+        total: candidates.length,
+        label: `Verification 0 / ${candidates.length}`,
+      });
+      const verified = await verifyAllGroups(candidates, onProg, scanCancelRef);
+      if (scanCancelRef.cancelled) {
+        setScreen('albums');
+        return;
+      }
+      setGroups(verified);
       setScreen('results');
     } catch (e: any) {
       Alert.alert('Erreur', `Le scan a echoue : ${e?.message || e}`);
