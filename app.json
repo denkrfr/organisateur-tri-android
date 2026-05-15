@@ -1,8 +1,7 @@
 {
   "expo": {
     "name": "Organisateur + Tri",
-    "slug": "organisateur-android",
-    "owner": "dennu",
+    "slug": "organisateur-tri",
     "version": "3.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
@@ -12,7 +11,9 @@
       "backgroundColor": "#0f1117",
       "resizeMode": "contain"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "updates": {
       "enabled": false,
       "checkAutomatically": "NEVER"
@@ -27,7 +28,8 @@
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.INTERNET",
-        "android.permission.ACCESS_NETWORK_STATE"
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ],
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",
@@ -50,8 +52,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "442ac330-8fbb-490a-aa02-d7adfb1de8d4"
+        "projectId": "6c287e27-bcee-428c-8544-0d8ce08ffe46"
       }
-    }
+    },
+    "owner": "denatakakr"
   }
 }
