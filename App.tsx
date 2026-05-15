@@ -45,11 +45,12 @@ import * as FileSystem from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { inflate } from 'pako';
+import TriScreen from './src/tri/TriScreen';
 
 // ============================================================================
 // Types & constantes
 // ============================================================================
-type Screen = 'permission' | 'home' | 'albums' | 'scan' | 'results' | 'corbeille';
+type Screen = 'permission' | 'home' | 'albums' | 'scan' | 'results' | 'corbeille' | 'tri';
 
 interface AlbumItem {
   id: string;
@@ -790,6 +791,7 @@ function HomeScreen({
   onScan,
   corbeilleCount,
   onOpenCorbeille,
+  onOpenTri,
 }: {
   includeVideos: boolean;
   setIncludeVideos: (v: boolean) => void;
@@ -798,6 +800,7 @@ function HomeScreen({
   onScan: () => void;
   corbeilleCount: number;
   onOpenCorbeille: () => void;
+  onOpenTri: () => void;
 }) {
   return (
     <View style={styles.container}>
@@ -847,6 +850,11 @@ function HomeScreen({
       <TouchableOpacity style={styles.bigBtn} onPress={onScan}>
         <Text style={styles.bigBtnIcon}>🔍</Text>
         <Text style={styles.bigBtnText}>Scanner ma galerie</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.triBtn} onPress={onOpenTri}>
+        <Text style={styles.bigBtnIcon}>✨</Text>
+        <Text style={styles.bigBtnText}>Tri par ressemblance (IA)</Text>
       </TouchableOpacity>
 
       {corbeilleCount > 0 && (
@@ -1822,6 +1830,10 @@ export default function App() {
     );
   }
 
+  if (screen === 'tri') {
+    return <TriScreen onBack={() => setScreen('home')} />;
+  }
+
   return (
     <HomeScreen
       includeVideos={includeVideos}
@@ -1831,6 +1843,7 @@ export default function App() {
       onScan={onOpenAlbums}
       corbeilleCount={corbeille.length}
       onOpenCorbeille={() => setScreen('corbeille')}
+      onOpenTri={() => setScreen('tri')}
     />
   );
 }
@@ -1908,6 +1921,18 @@ const styles = StyleSheet.create({
   },
   bigBtnIcon: { fontSize: 30, marginBottom: 6 },
   bigBtnText: { color: '#fff', fontSize: 17, fontWeight: '700' },
+  triBtn: {
+    backgroundColor: '#00b894',
+    borderRadius: 14,
+    paddingVertical: 22,
+    alignItems: 'center',
+    marginTop: 12,
+    shadowColor: '#00b894',
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
   // Buttons
   primaryBtn: {
     backgroundColor: COLORS.accent,
