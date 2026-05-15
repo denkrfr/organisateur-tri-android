@@ -48,6 +48,16 @@
           "savePhotosPermission": "L'application a besoin d'acceder a tes photos pour detecter les doublons.",
           "isAccessMediaLocationEnabled": false
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24,
+            "compileSdkVersion": 34,
+            "targetSdkVersion": 34
+          }
+        }
       ]
     ],
     "extra": {
