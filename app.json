@@ -1,9 +1,9 @@
 {
   "expo": {
-    "name": "Doublons photos V2",
+    "name": "Organisateur + Tri",
     "slug": "organisateur-android",
     "owner": "dennu",
-    "version": "2.1.0",
+    "version": "3.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0f1117",
@@ -21,15 +21,15 @@
       "supportsTablet": false
     },
     "android": {
-      "package": "com.organisateur.doublons.v2",
+      "package": "com.organisateur.tri",
       "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
-        "android.permission.READ_EXTERNAL_STORAGE"
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE"
       ],
       "blockedPermissions": [
-        "android.permission.INTERNET",
-        "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WAKE_LOCK",
         "android.permission.RECORD_AUDIO",
