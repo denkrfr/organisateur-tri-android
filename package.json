@@ -10,6 +10,7 @@
   "dependencies": {
     "expo": "~51.0.28",
     "expo-crypto": "~13.0.2",
+    "expo-dev-client": "~4.0.29",
     "expo-file-system": "~17.0.1",
     "expo-image": "~1.13.0",
     "expo-image-manipulator": "~12.0.5",
