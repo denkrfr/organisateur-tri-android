@@ -31,6 +31,9 @@ interface Props {
   onMove: (albumName: string) => void;
   onSkip: () => void;
   busy: boolean;
+  // Nom pre-rempli (utilise par le mode IA cloud pour suggerer le nom propose
+  // par le LLM). Vide par defaut.
+  initialName?: string;
 }
 
 const MAX_SHOW = 6;
@@ -53,8 +56,9 @@ export default function ClusterCard({
   onMove,
   onSkip,
   busy,
+  initialName,
 }: Props) {
-  const [name, setName] = useState('');
+  const [name, setName] = useState(initialName ?? '');
   const [focused, setFocused] = useState(false);
 
   const visible = cluster.items.slice(0, MAX_SHOW);

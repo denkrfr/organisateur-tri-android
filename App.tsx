@@ -46,11 +46,13 @@ import * as Crypto from 'expo-crypto';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { inflate } from 'pako';
 import TriScreen from './src/tri/TriScreen';
+import TriModeScreen from './src/tri/TriModeScreen';
+import TriApiScreen from './src/tri/apiTri/TriApiScreen';
 
 // ============================================================================
 // Types & constantes
 // ============================================================================
-type Screen = 'permission' | 'home' | 'albums' | 'scan' | 'results' | 'corbeille' | 'tri';
+type Screen = 'permission' | 'home' | 'albums' | 'scan' | 'results' | 'corbeille' | 'tri-mode' | 'tri' | 'tri-api';
 
 interface AlbumItem {
   id: string;
@@ -1830,8 +1832,22 @@ export default function App() {
     );
   }
 
+  if (screen === 'tri-mode') {
+    return (
+      <TriModeScreen
+        onChooseLocal={() => setScreen('tri')}
+        onChooseApi={() => setScreen('tri-api')}
+        onBack={() => setScreen('home')}
+      />
+    );
+  }
+
   if (screen === 'tri') {
-    return <TriScreen onBack={() => setScreen('home')} />;
+    return <TriScreen onBack={() => setScreen('tri-mode')} />;
+  }
+
+  if (screen === 'tri-api') {
+    return <TriApiScreen onBack={() => setScreen('tri-mode')} />;
   }
 
   return (
@@ -1843,7 +1859,7 @@ export default function App() {
       onScan={onOpenAlbums}
       corbeilleCount={corbeille.length}
       onOpenCorbeille={() => setScreen('corbeille')}
-      onOpenTri={() => setScreen('tri')}
+      onOpenTri={() => setScreen('tri-mode')}
     />
   );
 }
