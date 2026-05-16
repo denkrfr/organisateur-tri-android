@@ -97,8 +97,10 @@ function extractJson(text: string): LlmResponse | null {
 // Gemini (Google AI Studio)
 // ============================================================================
 const GEMINI_MODEL = 'gemini-2.0-flash-exp';
-const GEMINI_URL = (apiKey: string) =>
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+// La cle est passee via le header X-goog-api-key plutot que dans la query
+// string : evite qu'elle apparaisse dans d'eventuels logs intermediaires
+// (proxies d'entreprise avec inspection TLS, outils de monitoring, etc.)
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 async function callGemini(apiKey: string, imagesB64: string[]): Promise<LlmResponse> {
   const parts: any[] = [{ text: PROMPT_FR }];
@@ -114,9 +116,12 @@ async function callGemini(apiKey: string, imagesB64: string[]): Promise<LlmRespo
       temperature: 0.2,
     },
   };
-  const res = await fetch(GEMINI_URL(apiKey), {
+  const res = await fetch(GEMINI_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-goog-api-key': apiKey,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
