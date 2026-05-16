@@ -1,6 +1,13 @@
 /**
  * Carte visuelle d'un groupe (cluster) dans l'ecran Tri.
  * Affiche jusqu'a 6 thumbnails + bouton "Voir tout" si plus, input nom + actions.
+ *
+ * Autocompletion albums :
+ *   - Suggestions visibles des le focus du champ (top N albums)
+ *   - Filtre case + accent insensible quand on tape
+ *   - Si le texte matche un album existant : bouton vert "Ajouter a X"
+ *     et l'action utilise le titre exact (casse + accents) de l'album existant.
+ *   - Sinon : bouton violet "Creer X et deplacer".
  */
 
 import React, { useState } from 'react';
@@ -27,6 +34,16 @@ interface Props {
 }
 
 const MAX_SHOW = 6;
+const MAX_SUGGESTIONS = 5;
+
+// "Vacances été" -> "vacances ete"
+function normalize(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim();
+}
 
 export default function ClusterCard({
   cluster,
@@ -38,17 +55,36 @@ export default function ClusterCard({
   busy,
 }: Props) {
   const [name, setName] = useState('');
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [focused, setFocused] = useState(false);
 
   const visible = cluster.items.slice(0, MAX_SHOW);
   const remaining = cluster.items.length - visible.length;
 
-  // Auto-completion : albums existants qui matchent
-  const matchingAlbums = name
+  const trimmed = name.trim();
+  const normalizedTyped = normalize(trimmed);
+
+  // Album existant qui matche exactement (apres normalisation). Si trouve,
+  // on utilise son titre original (avec casse + accents) pour eviter de
+  // creer un doublon avec une casse legerement differente.
+  const exactMatch = trimmed
+    ? albums.find((a) => normalize(a.title) === normalizedTyped) ?? null
+    : null;
+
+  // Suggestions :
+  //   - aucun texte    -> top albums (les plus gros, ordre deja trie en amont)
+  //   - texte present  -> albums dont le titre contient le texte (case+accents insensible)
+  const matchingAlbums = trimmed
     ? albums
-        .filter((a) => a.title.toLowerCase().includes(name.toLowerCase()))
-        .slice(0, 4)
-    : [];
+        .filter((a) => normalize(a.title).includes(normalizedTyped))
+        .slice(0, MAX_SUGGESTIONS)
+    : albums.slice(0, MAX_SUGGESTIONS);
+
+  const showSuggestions = focused && matchingAlbums.length > 0;
+
+  // Cible reelle de l'action : titre exact si match, sinon le texte tape
+  const targetName = exactMatch?.title ?? trimmed;
+  const canAct = trimmed.length > 0;
+  const willAdd = !!exactMatch;
 
   return (
     <View style={styles.card}>
@@ -85,42 +121,62 @@ export default function ClusterCard({
 
       <TextInput
         style={styles.input}
-        placeholder="Nom de l'album (ex: skyvision, Plage...)"
+        placeholder="Nom de l'album (ex: Plage, Famille, Voyage...)"
         placeholderTextColor="#5a5e70"
         value={name}
-        onChangeText={(t) => {
-          setName(t);
-          setShowSuggestions(t.length >= 1);
-        }}
+        onChangeText={setName}
+        onFocus={() => setFocused(true)}
+        // Delai pour que le clic sur une suggestion ait le temps de declencher
+        // avant que le panneau ne disparaisse.
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
         editable={!busy}
-        autoCapitalize="none"
+        autoCapitalize="words"
       />
 
-      {showSuggestions && matchingAlbums.length > 0 && (
+      {showSuggestions && (
         <View style={styles.suggestions}>
-          {matchingAlbums.map((a) => (
-            <TouchableOpacity
-              key={a.id}
-              style={styles.suggestionRow}
-              onPress={() => {
-                setName(a.title);
-                setShowSuggestions(false);
-              }}
-            >
-              <Text style={styles.suggestionText}>{a.title}</Text>
-              <Text style={styles.suggestionCount}>{a.assetCount}</Text>
-            </TouchableOpacity>
-          ))}
+          {!trimmed && (
+            <Text style={styles.suggestionsHint}>Tes albums (clique pour reutiliser)</Text>
+          )}
+          {matchingAlbums.map((a) => {
+            const isMatch = !!trimmed && normalize(a.title) === normalizedTyped;
+            return (
+              <TouchableOpacity
+                key={a.id}
+                style={[styles.suggestionRow, isMatch && styles.suggestionRowMatch]}
+                onPress={() => {
+                  setName(a.title);
+                  setFocused(false);
+                }}
+              >
+                <Text style={[styles.suggestionText, isMatch && styles.suggestionTextMatch]}>
+                  {isMatch ? '✓ ' : ''}{a.title}
+                </Text>
+                <Text style={styles.suggestionCount}>{a.assetCount}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       )}
 
       <View style={styles.actionsRow}>
         <TouchableOpacity
-          style={[styles.btn, busy && styles.btnDisabled]}
-          onPress={() => onMove(name)}
-          disabled={busy}
+          style={[
+            styles.btn,
+            !canAct && styles.btnDisabled,
+            canAct && willAdd && styles.btnAddExisting,
+            busy && styles.btnDisabled,
+          ]}
+          onPress={() => onMove(targetName)}
+          disabled={busy || !canAct}
         >
-          <Text style={styles.btnText}>Creer album et deplacer</Text>
+          <Text style={styles.btnText} numberOfLines={1}>
+            {!canAct
+              ? "Tape un nom d'album"
+              : willAdd
+              ? `Ajouter a "${exactMatch!.title}" (${exactMatch!.assetCount})`
+              : `Creer "${trimmed}" et deplacer`}
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.skipBtn} onPress={onSkip} disabled={busy}>
           <Text style={styles.skipText}>Ignorer</Text>
@@ -198,13 +254,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#2e3244',
   },
+  suggestionsHint: {
+    color: '#8b8fa3',
+    fontSize: 10,
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: 2,
+    fontStyle: 'italic',
+  },
   suggestionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 8,
+  },
+  suggestionRowMatch: {
+    backgroundColor: 'rgba(0, 184, 148, 0.15)',
   },
   suggestionText: { color: '#e4e6f0' },
+  suggestionTextMatch: { color: '#00b894', fontWeight: '700' },
   suggestionCount: { color: '#8b8fa3', fontSize: 12 },
   actionsRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
   btn: {
@@ -214,7 +282,10 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     alignItems: 'center',
   },
-  btnDisabled: { opacity: 0.5 },
+  btnAddExisting: {
+    backgroundColor: '#00b894',
+  },
+  btnDisabled: { opacity: 0.4, backgroundColor: '#252836' },
   btnText: { color: 'white', fontWeight: '700' },
   skipBtn: {
     backgroundColor: '#252836',

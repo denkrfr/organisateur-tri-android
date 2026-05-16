@@ -694,7 +694,7 @@ function groupByHash(items: AssetItem[]): DupGroup[] {
   const groups: DupGroup[] = [];
   for (const [hash, arr] of buckets.entries()) {
     if (arr.length < 2) continue;
-    // Tri par taille decroissante (le + gros d'abord = la "meilleure copie")
+    // Tri par taille decroissante (le plus gros d'abord = la "meilleure copie")
     arr.sort((a, b) => b.fileSize - a.fileSize);
     const totalRecoverable = arr.slice(1).reduce((s, x) => s + x.fileSize, 0);
     groups.push({ hash, items: arr, totalRecoverable, kind: 'exact' });
@@ -1318,7 +1318,7 @@ function ResultItemRow({
         </Text>
         <Text style={styles.fileSize}>
           {fmtSize(item.fileSize)}
-          {isFirst && '   ·   le + gros'}
+          {isFirst && '   ·   le plus gros'}
         </Text>
       </View>
       <View style={[styles.checkbox, isSelected && styles.checkboxOn]}>
@@ -1436,7 +1436,7 @@ function ResultsScreen({
         </Text>
         <View style={styles.resultsActions}>
           <Pressable style={styles.smallBtn} onPress={checkAllButFirst}>
-            <Text style={styles.smallBtnText}>Tout cocher sauf le + gros</Text>
+            <Text style={styles.smallBtnText}>Tout cocher sauf le plus gros</Text>
           </Pressable>
           <Pressable style={styles.smallBtn} onPress={checkNone}>
             <Text style={styles.smallBtnText}>Tout decocher</Text>
@@ -1463,7 +1463,7 @@ function ResultsScreen({
           row.kind === 'header' ? (
             <View style={styles.groupHeaderRow}>
               <Text style={styles.groupHeader}>
-                {row.group.items.length} copies  ·  {fmtSize(row.group.totalRecoverable)} si on garde le + gros
+                {row.group.items.length} copies  ·  {fmtSize(row.group.totalRecoverable)} si on garde le plus gros
               </Text>
               <View
                 style={[

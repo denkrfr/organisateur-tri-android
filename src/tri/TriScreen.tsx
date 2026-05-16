@@ -167,7 +167,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
   const moveClusterToAlbum = useCallback(
     async (cluster: Cluster, albumName: string) => {
       if (!albumName.trim()) {
-        Alert.alert('Nom requis', 'Tape un nom d album avant de creer.');
+        Alert.alert('Nom requis', "Tape un nom d'album avant de creer.");
         return;
       }
       setBusy(true);
@@ -289,7 +289,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
         <View style={styles.progressBar}>
           <View style={[styles.progressFill, { width: `${pct}%` }]} />
         </View>
-        <Text style={styles.muted}>~2-5 secondes par image, soit prudent</Text>
+        <Text style={styles.muted}>~2-5 secondes par image, sois patient</Text>
       </View>
     );
   }
@@ -369,7 +369,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
             {pickedAssets.length} photo(s) selectionnee(s)
           </Text>
           <Text style={styles.muted}>
-            Strictesse du regroupement : {Math.round(threshold * 100)}%
+            Sensibilite du regroupement : {Math.round(threshold * 100)}%
           </Text>
           <View style={styles.thresholdRow}>
             <TouchableOpacity
