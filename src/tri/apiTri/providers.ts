@@ -200,8 +200,10 @@ async function callOpenAI(
     // Mode JSON : oblige la reponse a etre du JSON parseable. Necessite que
     // le prompt contienne le mot "JSON" — c'est le cas dans PROMPT_FR.
     response_format: { type: 'json_object' },
-    // GPT-5 series utilise max_completion_tokens (et non max_tokens).
-    max_completion_tokens: 2048,
+    // GPT-5 series utilise max_completion_tokens. 4096 = marge confortable
+    // pour 20 photos x noms longs en sortie. A 2048 on risquait des troncatures
+    // silencieuses qui faisaient echouer extractJson et perdre le batch entier.
+    max_completion_tokens: 4096,
   };
 
   const res = await fetchWithTimeout(OPENAI_URL, {

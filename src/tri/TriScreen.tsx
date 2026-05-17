@@ -39,6 +39,14 @@ interface TriScreenProps {
   onBack: () => void;
 }
 
+// Helper : formate proprement un message d'erreur en evitant "[object Object]"
+// quand `e` est un objet brut sans `.message`.
+function fmtError(e: any): string {
+  if (e?.message && typeof e.message === 'string') return e.message;
+  if (typeof e === 'string') return e;
+  return 'Erreur inconnue';
+}
+
 // Nettoie un nom d'album : retire caracteres interdits Android pour noms de
 // fichier/dossier, trim, cape a 100 chars. Si le resultat est vide, retourne
 // "Sans nom" pour eviter de crasher createAlbumAsync.
@@ -123,7 +131,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
       await loadVisionSession();
       setPhase('ready');
     } catch (e: any) {
-      Alert.alert('Erreur', String(e?.message ?? e));
+      Alert.alert('Erreur', fmtError(e));
       setPhase('need_download');
     }
   }, []);
@@ -161,7 +169,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
       setSelectedAlbumId(album.id);
       setPhase('ready');
     } catch (e: any) {
-      Alert.alert('Erreur', String(e?.message ?? e));
+      Alert.alert('Erreur', fmtError(e));
     } finally {
       setBusy(false);
     }
@@ -216,32 +224,38 @@ export default function TriScreen({ onBack }: TriScreenProps) {
     setPhase('results');
   }, [pickedAssets, threshold]);
 
-  // Intercept hardware back pendant analyse / DL : demander confirmation pour
-  // pas perdre 25 min d'analyse par mauvais reflex
+  // Intercept hardware back :
+  // - analyzing / downloading : Alert confirm (pas perdre 25 min de travail)
+  // - autres phases (ready / results / no_onnx / need_download) : appeler
+  //   onBack() pour revenir au TriModeScreen au lieu de quitter l'app
   useEffect(() => {
-    if (phase !== 'analyzing' && phase !== 'downloading') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      Alert.alert(
-        phase === 'analyzing' ? 'Annuler l\'analyse ?' : 'Annuler le telechargement ?',
-        phase === 'analyzing'
-          ? 'L\'avancement sera perdu (tu peux toujours relancer).'
-          : 'Le modele ne sera pas telecharge.',
-        [
-          { text: 'Continuer', style: 'cancel' },
-          {
-            text: 'Annuler',
-            style: 'destructive',
-            onPress: () => {
-              if (phase === 'analyzing') cancelAnalysis();
-              else setPhase('need_download');
+      if (phase === 'analyzing' || phase === 'downloading') {
+        Alert.alert(
+          phase === 'analyzing' ? "Annuler l'analyse ?" : 'Annuler le telechargement ?',
+          phase === 'analyzing'
+            ? "L'avancement sera perdu (tu peux toujours relancer)."
+            : 'Le modele ne sera pas telecharge.',
+          [
+            { text: 'Continuer', style: 'cancel' },
+            {
+              text: 'Annuler',
+              style: 'destructive',
+              onPress: () => {
+                if (phase === 'analyzing') cancelAnalysis();
+                else setPhase('need_download');
+              },
             },
-          },
-        ]
-      );
+          ]
+        );
+        return true;
+      }
+      // Pour les phases passives, back hardware = back logiciel
+      onBack();
       return true;
     });
     return () => sub.remove();
-  }, [phase, cancelAnalysis]);
+  }, [phase, cancelAnalysis, onBack]);
 
   // Action : creer un album + y deplacer les fichiers d'un cluster
   const moveClusterToAlbum = useCallback(
@@ -274,7 +288,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
         // Retire le cluster de la liste
         setClusters((prev) => prev.filter((c) => c !== cluster));
       } catch (e: any) {
-        Alert.alert('Erreur', String(e?.message ?? e));
+        Alert.alert('Erreur', fmtError(e));
       } finally {
         setBusy(false);
       }
@@ -366,10 +380,13 @@ export default function TriScreen({ onBack }: TriScreenProps) {
         }
         succeededFirstIds.push(...entry.firstIds);
       } catch (e: any) {
-        errors.push({ name: entry.displayName, msg: e?.message ?? String(e) });
+        errors.push({ name: entry.displayName, msg: fmtError(e) });
       }
     }
 
+    // Guard mountedRef : si l'user back navigates pendant flushAll, on evite
+    // les setState orphelins et l'Alert qui apparait apres unmount.
+    if (!mountedRef.current) return;
     const okSet = new Set(succeededFirstIds);
     setClusters((prev) => prev.filter((c) => !okSet.has(c.items[0]?.id ?? '')));
     setQueued((prev) => {
@@ -438,7 +455,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
           return next;
         });
       } catch (e: any) {
-        Alert.alert('Erreur', String(e?.message ?? e));
+        Alert.alert('Erreur', fmtError(e));
       } finally {
         setBusy(false);
       }
@@ -704,7 +721,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
             </>
           );
         })()}
-        {openClusterIdx !== null && (
+        {openClusterIdx !== null && clusters[openClusterIdx] && (
           <ClusterContentsModal
             cluster={clusters[openClusterIdx]}
             onClose={() => setOpenClusterIdx(null)}
@@ -745,7 +762,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
             onPress={() => pickAlbum(al)}
             disabled={busy}
           >
-            <Text style={styles.albumTitle}>{al.title}</Text>
+            <Text style={styles.albumTitle} numberOfLines={1}>{al.title}</Text>
             <Text style={styles.albumCount}>{al.assetCount} photo(s)</Text>
           </TouchableOpacity>
         );

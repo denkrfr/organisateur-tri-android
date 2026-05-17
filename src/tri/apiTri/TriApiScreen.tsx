@@ -38,6 +38,13 @@ interface Props {
   onBack: () => void;
 }
 
+// Helper : formate proprement un message d'erreur en evitant "[object Object]"
+function fmtError(e: any): string {
+  if (e?.message && typeof e.message === 'string') return e.message;
+  if (typeof e === 'string') return e;
+  return 'Erreur inconnue';
+}
+
 // Cf TriScreen pour la rationale. On duplique localement pour pas creer un
 // fichier util/ separe pour 6 lignes.
 function sanitizeAlbumName(name: string): string {
@@ -140,7 +147,7 @@ export default function TriApiScreen({ onBack }: Props) {
       setPickedAssets(all);
       setSelectedAlbumId(album.id);
     } catch (e: any) {
-      Alert.alert('Erreur', e?.message ?? String(e));
+      Alert.alert('Erreur', fmtError(e));
     } finally {
       setBusy(false);
     }
@@ -211,29 +218,34 @@ export default function TriApiScreen({ onBack }: Props) {
       }
       Alert.alert(
         'Echec analyse IA',
-        (e?.message ?? String(e)) +
-          '\n\nTu peux reessayer ou revenir choisir le mode local.'
+        fmtError(e) + '\n\nTu peux reessayer ou revenir choisir le mode local.'
       );
       setPhase('ready');
     }
   }, [provider, pickedAssets]);
 
-  // Intercept hardware back pendant l'analyse pour confirmer l'annulation
+  // Intercept hardware back :
+  // - analyzing : Alert confirm (annule + abort fetch en cours)
+  // - autres phases (ready / setup / results) : appeler onBack() pour revenir
+  //   au TriModeScreen au lieu de quitter l'app
   useEffect(() => {
-    if (phase !== 'analyzing') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      Alert.alert(
-        "Annuler l'analyse IA ?",
-        "L'avancement sera perdu (tu peux relancer ensuite).",
-        [
-          { text: 'Continuer', style: 'cancel' },
-          { text: 'Annuler', style: 'destructive', onPress: cancelAnalysis },
-        ]
-      );
+      if (phase === 'analyzing') {
+        Alert.alert(
+          "Annuler l'analyse IA ?",
+          "L'avancement sera perdu (tu peux relancer ensuite).",
+          [
+            { text: 'Continuer', style: 'cancel' },
+            { text: 'Annuler', style: 'destructive', onPress: cancelAnalysis },
+          ]
+        );
+        return true;
+      }
+      onBack();
       return true;
     });
     return () => sub.remove();
-  }, [phase, cancelAnalysis]);
+  }, [phase, cancelAnalysis, onBack]);
 
   // Convertit ApiCluster -> Cluster (format attendu par ClusterCard).
   // ClusterCard ignore le champ 'embedding' donc on peut le mettre vide.
@@ -274,7 +286,7 @@ export default function TriApiScreen({ onBack }: Props) {
         );
         setClusters((prev) => prev.filter((c) => c !== cluster));
       } catch (e: any) {
-        Alert.alert('Erreur', e?.message ?? String(e));
+        Alert.alert('Erreur', fmtError(e));
       } finally {
         setBusy(false);
       }
@@ -361,10 +373,13 @@ export default function TriApiScreen({ onBack }: Props) {
         }
         succeededFirstIds.push(...entry.firstIds);
       } catch (e: any) {
-        errors.push({ name: entry.displayName, msg: e?.message ?? String(e) });
+        errors.push({ name: entry.displayName, msg: fmtError(e) });
       }
     }
 
+    // Guard mountedRef : si user navigate pendant le flush, eviter
+    // les setState/Alert sur composant unmounted.
+    if (!mountedRef.current) return;
     const okSet = new Set(succeededFirstIds);
     setClusters((prev) => prev.filter((c) => !okSet.has(c.items[0]?.id ?? '')));
     setQueued((prev) => {
@@ -593,7 +608,7 @@ export default function TriApiScreen({ onBack }: Props) {
             onPress={() => pickAlbum(al)}
             disabled={busy}
           >
-            <Text style={styles.albumTitle}>{al.title}</Text>
+            <Text style={styles.albumTitle} numberOfLines={1}>{al.title}</Text>
             <Text style={styles.albumCount}>{al.assetCount} photo(s)</Text>
           </TouchableOpacity>
         );

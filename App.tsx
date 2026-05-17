@@ -133,6 +133,41 @@ async function saveDeletedIds(ids: Set<string>): Promise<void> {
   }
 }
 
+// Persistence de la corbeille interne : permet de survivre a un kill de l'app
+// par Android (memory pressure) ou un crash entre "envoi a corbeille" et
+// "suppression definitive". Sans ca, l'user perd la trace des fichiers mis en
+// corbeille (les fichiers restent intacts sur le tel mais il doit re-scanner).
+const CORBEILLE_FILE = FileSystem.documentDirectory + 'corbeille.json';
+
+async function loadCorbeille(): Promise<AssetItem[]> {
+  try {
+    const info = await FileSystem.getInfoAsync(CORBEILLE_FILE);
+    if (!info.exists) return [];
+    const text = await FileSystem.readAsStringAsync(CORBEILLE_FILE);
+    const arr = JSON.parse(text);
+    if (!Array.isArray(arr)) return [];
+    // Filtre defensif : on accepte que les objets qui ressemblent a un AssetItem
+    return arr.filter(
+      (x): x is AssetItem =>
+        x &&
+        typeof x.id === 'string' &&
+        typeof x.uri === 'string' &&
+        typeof x.filename === 'string' &&
+        typeof x.fileSize === 'number'
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function saveCorbeille(items: AssetItem[]): Promise<void> {
+  try {
+    await FileSystem.writeAsStringAsync(CORBEILLE_FILE, JSON.stringify(items));
+  } catch {
+    // best-effort
+  }
+}
+
 // ============================================================================
 // Helpers : hashing
 // ============================================================================
@@ -267,7 +302,10 @@ async function fetchAllAssets(
 // Hashe un asset unique. Retourne null si echec ou fichier non-local.
 async function hashOneAsset(a: AssetItem): Promise<AssetItem | null> {
   try {
-    const info = await MediaLibrary.getAssetInfoAsync(a, { shouldDownloadFromNetwork: false });
+    // Cast `as any` : MediaLibrary.getAssetInfoAsync lit uniquement le .id du
+    // 1er argument. AssetItem est notre type minimal (id+uri+filename+fileSize),
+    // pas l'Asset complet (width/height/creationTime non utilises ici).
+    const info = await MediaLibrary.getAssetInfoAsync(a as any, { shouldDownloadFromNetwork: false });
     const localUri = info.localUri || info.uri;
     if (!localUri) return null;
     // Skip les content:// URIs non resolus (asset cloud non telecharge)
@@ -1141,7 +1179,7 @@ function CorbeilleItemRow({
         source={{ uri: it.uri }}
         style={styles.thumb}
         contentFit="cover"
-        cachePolicy="disk"
+        cachePolicy="memory-disk"
         recyclingKey={it.id}
         transition={120}
       />
@@ -1174,6 +1212,10 @@ function CorbeilleScreen({
   onBack: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // isDeleting : guard contre le double-tap sur "Supprimer definitivement".
+  // Sans ca, 2 taps rapides -> 2 deleteAssetsAsync en parallele = 2 dialogs
+  // Android empiles, comportement non deterministe.
+  const [isDeleting, setIsDeleting] = useState(false);
   // Ref pour stabilite du callback toggle (sinon re-render de toutes les rows
   // a chaque tap, plus previews qui flashent / re-decode JPEG).
   const selectedRef = useRef(selected);
@@ -1225,7 +1267,7 @@ function CorbeilleScreen({
   };
 
   const handleDeleteForReal = () => {
-    if (selected.size === 0) return;
+    if (selected.size === 0 || isDeleting) return;
     const ids = Array.from(selected);
     Alert.alert(
       'Supprimer definitivement ?',
@@ -1236,18 +1278,24 @@ function CorbeilleScreen({
           text: 'Supprimer',
           style: 'destructive',
           onPress: async () => {
-            const ok = await onDeleteForReal(ids);
-            if (ok) {
-              setSelected(new Set());
-              Alert.alert(
-                'Termine',
-                `${ids.length} fichier(s) envoyes a la corbeille systeme. Tu peux les recuperer pendant 30 jours depuis l'app Galerie -> Corbeille.`
-              );
-            } else {
-              Alert.alert(
-                'Annule',
-                "La suppression a ete annulee ou refusee. Les fichiers sont toujours dans la corbeille de l'app."
-              );
+            if (isDeleting) return;
+            setIsDeleting(true);
+            try {
+              const ok = await onDeleteForReal(ids);
+              if (ok) {
+                setSelected(new Set());
+                Alert.alert(
+                  'Termine',
+                  `${ids.length} fichier(s) envoyes a la corbeille systeme. Tu peux les recuperer pendant 30 jours depuis l'app Galerie -> Corbeille.`
+                );
+              } else {
+                Alert.alert(
+                  'Annule',
+                  "La suppression a ete annulee ou refusee. Les fichiers sont toujours dans la corbeille de l'app."
+                );
+              }
+            } finally {
+              setIsDeleting(false);
             }
           },
         },
@@ -1335,9 +1383,9 @@ function CorbeilleScreen({
           <TouchableOpacity
             style={[
               styles.restoreBtn,
-              selected.size === 0 && styles.dangerBtnDisabled,
+              (selected.size === 0 || isDeleting) && styles.dangerBtnDisabled,
             ]}
-            disabled={selected.size === 0}
+            disabled={selected.size === 0 || isDeleting}
             onPress={handleRestore}
           >
             <Text style={styles.restoreBtnText}>Restaurer</Text>
@@ -1347,12 +1395,14 @@ function CorbeilleScreen({
             style={[
               styles.dangerBtn,
               { flex: 1 },
-              selected.size === 0 && styles.dangerBtnDisabled,
+              (selected.size === 0 || isDeleting) && styles.dangerBtnDisabled,
             ]}
-            disabled={selected.size === 0}
+            disabled={selected.size === 0 || isDeleting}
             onPress={handleDeleteForReal}
           >
-            <Text style={styles.dangerBtnText}>Supprimer definitivement</Text>
+            <Text style={styles.dangerBtnText}>
+              {isDeleting ? 'Suppression...' : 'Supprimer definitivement'}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1398,7 +1448,7 @@ function ResultItemRow({
         source={{ uri: item.uri }}
         style={styles.thumb}
         contentFit="cover"
-        cachePolicy="disk"
+        cachePolicy="memory-disk"
         recyclingKey={item.id}
         transition={120}
       />
@@ -1635,7 +1685,12 @@ export default function App() {
   const [scanCancelRef] = useState({ cancelled: false });
   // Corbeille interne : fichiers marques pour suppression mais pas encore
   // envoyes au systeme. Securite supplementaire avant la suppression Android.
+  // Persiste sur disque pour survivre aux kills d'app par Android (memory pressure)
+  // ou crashes entre "envoi corbeille" et "suppression definitive".
   const [corbeille, setCorbeille] = useState<AssetItem[]>([]);
+  // Guard pour ne pas overwrite le fichier disque avec le state initial vide
+  // avant le 1er load.
+  const corbeilleLoadedRef = useRef(false);
   // Albums (= dossiers de la galerie) : liste + selection.
   const [albums, setAlbums] = useState<AlbumItem[]>([]);
   const [albumsLoading, setAlbumsLoading] = useState(false);
@@ -1647,10 +1702,21 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const ids = await loadDeletedIds();
+      const [ids, restoredCorbeille] = await Promise.all([
+        loadDeletedIds(),
+        loadCorbeille(),
+      ]);
       setDeletedIds(ids);
+      setCorbeille(restoredCorbeille);
+      corbeilleLoadedRef.current = true;
     })();
   }, []);
+
+  // Persiste la corbeille a chaque changement (apres le load initial).
+  useEffect(() => {
+    if (!corbeilleLoadedRef.current) return;
+    saveCorbeille(corbeille);
+  }, [corbeille]);
 
   // Re-check de la permission au mount + a chaque retour sur l'app (utile
   // si l'utilisateur a change la permission depuis les parametres systeme).
@@ -1688,7 +1754,7 @@ export default function App() {
         prev.size === 0 ? new Set(list.map((a) => a.id)) : prev
       );
     } catch (e: any) {
-      Alert.alert('Erreur', `Impossible de lister les dossiers : ${e?.message || e}`);
+      Alert.alert('Erreur', `Impossible de lister les dossiers : ${e?.message || (typeof e === 'string' ? e : 'erreur inconnue')}`);
       setScreen('home');
     } finally {
       setAlbumsLoading(false);
@@ -1776,7 +1842,7 @@ export default function App() {
       setGroups(merged);
       setScreen('results');
     } catch (e: any) {
-      Alert.alert('Erreur', `Le scan a echoue : ${e?.message || e}`);
+      Alert.alert('Erreur', `Le scan a echoue : ${e?.message || (typeof e === 'string' ? e : 'erreur inconnue')}`);
       setScreen('albums');
     }
   }, [includeVideos, includePHash, selectedAlbums, scanCancelRef, deletedIds]);
@@ -1855,18 +1921,27 @@ export default function App() {
           // Marque ces ids comme "envoyes a la corbeille systeme" et persiste
           // sur disque, pour ne pas les re-detecter aux scans suivants tant
           // qu'Android ne les a pas vraiment effaces (~30 jours).
-          const next = new Set(deletedIds);
-          for (const id of ids) next.add(id);
-          setDeletedIds(next);
-          saveDeletedIds(next); // best-effort, fire-and-forget
+          // setDeletedIds updater functional : evite la closure stale si plusieurs
+          // suppressions s'enchainent rapidement (React batching).
+          let merged: Set<string> = new Set();
+          setDeletedIds((prev) => {
+            merged = new Set(prev);
+            for (const id of ids) merged.add(id);
+            return merged;
+          });
+          // Await la persistence pour qu'une erreur disque soit visible et
+          // pour eviter qu'un crash juste apres ne perde l'info (les fichiers
+          // seraient re-detectes au prochain scan).
+          await saveDeletedIds(merged);
         }
         return success;
       } catch (e: any) {
-        Alert.alert('Erreur', e?.message || String(e));
+        const msg = e?.message ? String(e.message) : String(e);
+        Alert.alert('Erreur', msg && msg !== '[object Object]' ? msg : 'Suppression impossible.');
         return false;
       }
     },
-    [deletedIds]
+    []
   );
 
   // Loading initial : permGranted est null tant que getPermissionsAsync
