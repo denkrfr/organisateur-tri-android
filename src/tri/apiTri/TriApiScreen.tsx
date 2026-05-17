@@ -381,26 +381,20 @@ function ClusterCardApiWrapper({
       embedding: new Float32Array(0),
     })),
   };
+  // La banniere "IA propose : ..." est rendue dans ClusterCard (tappable +
+  // selectable) via le prop suggestedName. initialName pre-remplit l'input.
   return (
-    <View>
-      {!!apiCluster.suggestedName && (
-        <View style={styles.suggBanner}>
-          <Text style={styles.suggBannerText}>
-            ✨ IA propose : <Text style={styles.suggBannerName}>{apiCluster.suggestedName}</Text>
-          </Text>
-        </View>
-      )}
-      <ClusterCard
-        cluster={cluster}
-        index={index}
-        albums={albums}
-        onSeeAll={onSeeAll}
-        onMove={onMove}
-        onSkip={onSkip}
-        busy={busy}
-        initialName={apiCluster.suggestedName}
-      />
-    </View>
+    <ClusterCard
+      cluster={cluster}
+      index={index}
+      albums={albums}
+      onSeeAll={onSeeAll}
+      onMove={onMove}
+      onSkip={onSkip}
+      busy={busy}
+      initialName={apiCluster.suggestedName}
+      suggestedName={apiCluster.suggestedName}
+    />
   );
 }
 
@@ -465,17 +459,4 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   progressFill: { height: '100%', backgroundColor: '#6c5ce7' },
-  suggBanner: {
-    backgroundColor: 'rgba(108, 92, 231, 0.18)',
-    borderColor: '#6c5ce7',
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    marginTop: 4,
-    marginBottom: -4,
-    zIndex: 1,
-  },
-  suggBannerText: { color: '#e4e6f0', fontSize: 13 },
-  suggBannerName: { color: '#a29bfe', fontWeight: '700' },
 });

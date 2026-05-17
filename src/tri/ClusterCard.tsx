@@ -34,6 +34,10 @@ interface Props {
   // Nom pre-rempli (utilise par le mode IA cloud pour suggerer le nom propose
   // par le LLM). Vide par defaut.
   initialName?: string;
+  // Nom suggere par l'IA, affiche dans une banniere tappable au-dessus de
+  // l'input. Tap = re-applique le nom (utile si l'user a modifie le champ
+  // et veut revenir a la suggestion). Texte aussi selectable pour copy.
+  suggestedName?: string;
 }
 
 const MAX_SHOW = 6;
@@ -57,6 +61,7 @@ export default function ClusterCard({
   onSkip,
   busy,
   initialName,
+  suggestedName,
 }: Props) {
   const [name, setName] = useState(initialName ?? '');
   const [focused, setFocused] = useState(false);
@@ -122,6 +127,23 @@ export default function ClusterCard({
           </TouchableOpacity>
         )}
       </ScrollView>
+
+      {!!suggestedName && (
+        <TouchableOpacity
+          style={styles.suggBanner}
+          onPress={() => setName(suggestedName)}
+          activeOpacity={0.7}
+          disabled={busy}
+        >
+          <Text style={styles.suggBannerText} selectable>
+            <Text>✨ IA propose : </Text>
+            <Text style={styles.suggBannerName}>{suggestedName}</Text>
+            {normalize(name) !== normalize(suggestedName) && (
+              <Text style={styles.suggBannerHint}>  · tape pour reutiliser</Text>
+            )}
+          </Text>
+        </TouchableOpacity>
+      )}
 
       <TextInput
         style={styles.input}
@@ -300,4 +322,17 @@ const styles = StyleSheet.create({
     borderColor: '#2e3244',
   },
   skipText: { color: '#e4e6f0' },
+  suggBanner: {
+    backgroundColor: 'rgba(108, 92, 231, 0.18)',
+    borderColor: '#6c5ce7',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginTop: 6,
+    marginBottom: 2,
+  },
+  suggBannerText: { color: '#e4e6f0', fontSize: 13 },
+  suggBannerName: { color: '#a29bfe', fontWeight: '700' },
+  suggBannerHint: { color: '#8b8fa3', fontSize: 11, fontStyle: 'italic' },
 });

@@ -96,7 +96,9 @@ function extractJson(text: string): LlmResponse | null {
 // ============================================================================
 // Gemini (Google AI Studio)
 // ============================================================================
-const GEMINI_MODEL = 'gemini-2.0-flash-exp';
+// gemini-2.5-flash : stable GA, multimodal, free tier 15 RPM.
+// (gemini-2.0-flash-exp etait experimental et a ete retire par Google -> 404.)
+const GEMINI_MODEL = 'gemini-2.5-flash';
 // La cle est passee via le header X-goog-api-key plutot que dans la query
 // string : evite qu'elle apparaisse dans d'eventuels logs intermediaires
 // (proxies d'entreprise avec inspection TLS, outils de monitoring, etc.)
