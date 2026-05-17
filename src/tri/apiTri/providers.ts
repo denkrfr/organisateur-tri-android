@@ -142,8 +142,7 @@ async function callGemini(apiKey: string, imagesB64: string[]): Promise<LlmRespo
 // ============================================================================
 // gpt-5-nano : modele le moins cher d'OpenAI avec vision native (~$0.20/M
 // input, $1.25/M output). Pour notre use case (classification + JSON court)
-// avec detail:'low' on tombe a ~$0.05 / 1000 photos. Bien moins cher que
-// Claude Haiku (~$1.50 / 1000 photos) sans perdre en qualite vision.
+// avec detail:'low' on tombe a ~$0.05 / 1000 photos.
 const OPENAI_MODEL = 'gpt-5-nano';
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
@@ -244,9 +243,12 @@ export async function analyzeWithApi(
     onProgress(b, totalBatches, `Envoi lot ${b + 1}/${totalBatches} (${validB64.length} photos)...`);
     let llm: LlmResponse;
     try {
-      llm = provider === 'gemini'
-        ? await callGemini(apiKey, validB64)
-        : await callOpenAI(apiKey, validB64);
+      // 'gemini' et 'gemini-paid' utilisent le meme code (meme API, meme modele,
+      // meme endpoint). La distinction est uniquement declarative cote user :
+      // 'gemini-paid' indique que son projet GCP a le billing active.
+      llm = provider === 'openai'
+        ? await callOpenAI(apiKey, validB64)
+        : await callGemini(apiKey, validB64);
     } catch (e: any) {
       // On laisse remonter l'erreur pour que l'UI puisse la gerer (cle invalide, quota, etc.)
       throw e;

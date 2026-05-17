@@ -24,7 +24,6 @@ import * as MediaLibrary from 'expo-media-library';
 import {
   getConfiguredProvider,
   loadApiKey,
-  loadSelectedProvider,
   type ProviderId,
 } from './keyStore';
 import { analyzeWithApi, type ApiCluster, type ApiClusterItem } from './providers';
@@ -217,49 +216,77 @@ export default function TriApiScreen({ onBack }: Props) {
     });
   }, []);
 
-  // Flush : execute en serie tous les deplacements en file, retire les
-  // clusters reussis de l'affichage. 1 seul Alert final pour le bilan.
+  // Flush : groupe les clusters en file PAR ALBUM CIBLE (normalise casse +
+  // accents) -> 1-2 appels MediaLibrary par album unique. Reduit le nombre
+  // de popups d'autorisation Android 11+ et evite "Voyage" vs "voyage" qui
+  // resterait separe dans le bilan affiche a l'user.
   const flushAll = useCallback(async () => {
     if (queued.size === 0) return;
     setBusy(true);
-    const succeeded: string[] = []; // firstItemIds
-    const errors: { name: string; msg: string }[] = [];
+
+    const normalize = (s: string) =>
+      s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    const byAlbum = new Map<
+      string,
+      { items: ApiClusterItem[]; firstIds: string[]; displayName: string }
+    >();
     for (const [firstId, albumName] of queued) {
       const cluster = clusters.find((c) => c.items[0]?.id === firstId);
       if (!cluster) continue;
+      const key = normalize(albumName);
+      const entry = byAlbum.get(key) ?? {
+        items: [],
+        firstIds: [],
+        displayName: albumName,
+      };
+      entry.items.push(...cluster.items);
+      entry.firstIds.push(firstId);
+      byAlbum.set(key, entry);
+    }
+
+    const succeededFirstIds: string[] = [];
+    const errors: { name: string; msg: string }[] = [];
+    for (const [, entry] of byAlbum) {
       try {
-        const assetIds = cluster.items.map((it) => it.id);
-        const fakeAssets = assetIds.map((id) => ({ id } as MediaLibrary.Asset));
-        const existing = await MediaLibrary.getAlbumAsync(albumName);
+        const fakeAssets = entry.items.map((it) => ({ id: it.id } as MediaLibrary.Asset));
+        const existing = await MediaLibrary.getAlbumAsync(entry.displayName);
         let album: MediaLibrary.Album;
         if (existing) {
           album = existing;
           await MediaLibrary.addAssetsToAlbumAsync(fakeAssets as any, album, false);
         } else {
-          album = await MediaLibrary.createAlbumAsync(albumName, fakeAssets[0] as any, false);
+          album = await MediaLibrary.createAlbumAsync(
+            entry.displayName,
+            fakeAssets[0] as any,
+            false
+          );
           if (fakeAssets.length > 1) {
             await MediaLibrary.addAssetsToAlbumAsync(fakeAssets.slice(1) as any, album, false);
           }
         }
-        succeeded.push(firstId);
+        succeededFirstIds.push(...entry.firstIds);
       } catch (e: any) {
-        errors.push({ name: albumName, msg: e?.message ?? String(e) });
+        errors.push({ name: entry.displayName, msg: e?.message ?? String(e) });
       }
     }
-    const okSet = new Set(succeeded);
+
+    const okSet = new Set(succeededFirstIds);
     setClusters((prev) => prev.filter((c) => !okSet.has(c.items[0]?.id ?? '')));
     setQueued((prev) => {
       const next = new Map(prev);
-      for (const id of succeeded) next.delete(id);
+      for (const id of succeededFirstIds) next.delete(id);
       return next;
     });
     setBusy(false);
     if (errors.length === 0) {
-      Alert.alert('File traitee', `${succeeded.length} groupe(s) deplace(s).`);
+      Alert.alert(
+        'File traitee',
+        `${succeededFirstIds.length} groupe(s) deplace(s) dans ${byAlbum.size} album(s).`
+      );
     } else {
       Alert.alert(
         'File traitee avec erreurs',
-        `OK : ${succeeded.length}\nEchecs : ${errors.length}\n\n` +
+        `OK : ${succeededFirstIds.length}\nEchecs : ${errors.length}\n\n` +
           errors.map((e) => `- ${e.name} : ${e.msg.slice(0, 80)}`).join('\n')
       );
     }
@@ -429,7 +456,13 @@ export default function TriApiScreen({ onBack }: Props) {
           <Text style={styles.link}>← Retour</Text>
         </TouchableOpacity>
         <Text style={styles.titleSmall}>
-          Tri IA ({provider === 'gemini' ? 'Gemini' : 'GPT-5 nano'})
+          Tri IA ({
+            provider === 'gemini'
+              ? 'Gemini'
+              : provider === 'gemini-paid'
+              ? 'Gemini privee'
+              : 'GPT-5 nano'
+          })
         </Text>
       </View>
       <Text style={styles.body}>
@@ -457,7 +490,13 @@ export default function TriApiScreen({ onBack }: Props) {
             {pickedAssets.length} photo(s) selectionnee(s)
           </Text>
           <Text style={styles.muted}>
-            Sera envoye a {provider === 'gemini' ? 'Google Gemini' : 'OpenAI GPT-5 nano'}
+            Sera envoye a {
+              provider === 'gemini'
+                ? 'Google Gemini (gratuit)'
+                : provider === 'gemini-paid'
+                ? 'Google Gemini (privee, billing actif)'
+                : 'OpenAI GPT-5 nano'
+            }
             {' '}par lots de 20.
           </Text>
           <TouchableOpacity

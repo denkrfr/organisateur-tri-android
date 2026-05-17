@@ -22,9 +22,12 @@ export interface Cluster {
   items: ClusterItem[];
 }
 
+// Defaut 0.78 : adapte au tri par theme (ex : 140 paysages du Japon doivent
+// se regrouper meme s'ils ne sont pas quasi-identiques). Pour de la detection
+// de duplicates visuels precis, utiliser 0.85-0.90.
 export function greedyCluster(
   items: ClusterItem[],
-  threshold: number = 0.88
+  threshold: number = 0.78
 ): Cluster[] {
   const clusters: Cluster[] = [];
   const used = new Set<string>();

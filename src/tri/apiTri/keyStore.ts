@@ -7,7 +7,13 @@
 
 import * as SecureStore from 'expo-secure-store';
 
-export type ProviderId = 'gemini' | 'openai';
+// 'gemini'      : free tier Gemini (1500 req/jour gratuit, photos potentiellement
+//                 utilisees pour entrainement selon les conditions Google AI Studio)
+// 'gemini-paid' : meme API mais l'user a active le billing sur son projet
+//                 Google Cloud -> Google s'engage a ne PAS utiliser les photos
+//                 pour entrainer ses modeles. Cle API a generer pareil.
+// 'openai'      : OpenAI GPT-5 nano payant, photos non utilisees par defaut
+export type ProviderId = 'gemini' | 'gemini-paid' | 'openai';
 
 const KEY_PREFIX = 'tri_api_';
 const PROVIDER_KEY = 'tri_provider';
@@ -39,7 +45,7 @@ export async function saveSelectedProvider(provider: ProviderId): Promise<void> 
 export async function loadSelectedProvider(): Promise<ProviderId | null> {
   try {
     const v = await SecureStore.getItemAsync(PROVIDER_KEY);
-    if (v === 'gemini' || v === 'openai') return v;
+    if (v === 'gemini' || v === 'gemini-paid' || v === 'openai') return v;
     // Anciennes installs avec 'claude' : on ignore, l'user refera le setup.
     return null;
   } catch {

@@ -15,11 +15,9 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  FlatList,
   ScrollView,
   Alert,
   ActivityIndicator,
-  TextInput,
 } from 'react-native';
 import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
@@ -34,12 +32,13 @@ import { encodeImage } from './embeddings';
 import { greedyCluster, type Cluster, type ClusterItem } from './clustering';
 import ClusterCard from './ClusterCard';
 import ClusterContentsModal from './ClusterContentsModal';
+import SingletonGroupCard from './SingletonGroupCard';
 
 interface TriScreenProps {
   onBack: () => void;
 }
 
-type Phase = 'check_model' | 'no_onnx' | 'need_download' | 'downloading' | 'ready' | 'picking' | 'analyzing' | 'results';
+type Phase = 'check_model' | 'no_onnx' | 'need_download' | 'downloading' | 'ready' | 'analyzing' | 'results';
 
 interface PickedAsset {
   id: string;
@@ -54,7 +53,9 @@ export default function TriScreen({ onBack }: TriScreenProps) {
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [analysisTotal, setAnalysisTotal] = useState(0);
   const [clusters, setClusters] = useState<Cluster[]>([]);
-  const [threshold, setThreshold] = useState(0.88);
+  // 0.78 = sweet spot pour tri par theme (photos d'un voyage, paysages,
+  // animaux). 0.88+ etait trop strict -> presque tout en singletons.
+  const [threshold, setThreshold] = useState(0.78);
   const [openClusterIdx, setOpenClusterIdx] = useState<number | null>(null);
   const [albums, setAlbums] = useState<MediaLibrary.Album[]>([]);
   const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
@@ -93,7 +94,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
 
   // Charge la liste des albums
   useEffect(() => {
-    if (phase === 'ready' || phase === 'picking') {
+    if (phase === 'ready') {
       (async () => {
         const list = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: false });
         setAlbums(list.filter((a) => a.assetCount > 0).sort((a, b) => b.assetCount - a.assetCount));
@@ -214,18 +215,100 @@ export default function TriScreen({ onBack }: TriScreenProps) {
     });
   }, []);
 
-  // Flush : execute en serie tous les deplacements en file, retire les
-  // clusters reussis. 1 seul Alert final pour le bilan.
+  // Flush : groupe tous les clusters en file PAR ALBUM CIBLE (insensible
+  // casse/accents), puis fait 1-2 appels MediaLibrary par album unique
+  // (au lieu de 1-2 par cluster). Resultat : si 5 clusters vont dans
+  // "Voyage Japon" (meme avec casse differente), 1 popup Android au
+  // lieu de 5-10.
   const flushAll = useCallback(async () => {
     if (queued.size === 0) return;
     setBusy(true);
-    const succeeded: string[] = [];
-    const errors: { name: string; msg: string }[] = [];
+
+    // Normalisation insensible casse/accents pour la cle de groupage.
+    // displayName = premier nom rencontre (garde sa casse pour l'API).
+    const normalize = (s: string) =>
+      s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    const byAlbum = new Map<
+      string,
+      { items: ClusterItem[]; firstIds: string[]; displayName: string }
+    >();
     for (const [firstId, albumName] of queued) {
       const cluster = clusters.find((c) => c.items[0]?.id === firstId);
       if (!cluster) continue;
+      const key = normalize(albumName);
+      const entry = byAlbum.get(key) ?? {
+        items: [],
+        firstIds: [],
+        displayName: albumName,
+      };
+      entry.items.push(...cluster.items);
+      entry.firstIds.push(firstId);
+      byAlbum.set(key, entry);
+    }
+
+    const succeededFirstIds: string[] = [];
+    const errors: { name: string; msg: string }[] = [];
+    for (const [, entry] of byAlbum) {
       try {
-        const assetIds = cluster.items.map((it) => it.id);
+        const fakeAssets = entry.items.map((it) => ({ id: it.id } as MediaLibrary.Asset));
+        const existing = await MediaLibrary.getAlbumAsync(entry.displayName);
+        let album: MediaLibrary.Album;
+        if (existing) {
+          album = existing;
+          await MediaLibrary.addAssetsToAlbumAsync(fakeAssets as any, album, false);
+        } else {
+          album = await MediaLibrary.createAlbumAsync(
+            entry.displayName,
+            fakeAssets[0] as any,
+            false
+          );
+          if (fakeAssets.length > 1) {
+            await MediaLibrary.addAssetsToAlbumAsync(fakeAssets.slice(1) as any, album, false);
+          }
+        }
+        succeededFirstIds.push(...entry.firstIds);
+      } catch (e: any) {
+        errors.push({ name: entry.displayName, msg: e?.message ?? String(e) });
+      }
+    }
+
+    const okSet = new Set(succeededFirstIds);
+    setClusters((prev) => prev.filter((c) => !okSet.has(c.items[0]?.id ?? '')));
+    setQueued((prev) => {
+      const next = new Map(prev);
+      for (const id of succeededFirstIds) next.delete(id);
+      return next;
+    });
+    setBusy(false);
+    if (errors.length === 0) {
+      Alert.alert(
+        'File traitee',
+        `${succeededFirstIds.length} groupe(s) deplace(s) dans ${byAlbum.size} album(s).`
+      );
+    } else {
+      Alert.alert(
+        'File traitee avec erreurs',
+        `OK : ${succeededFirstIds.length}\nEchecs : ${errors.length}\n\n` +
+          errors.map((e) => `- ${e.name} : ${e.msg.slice(0, 80)}`).join('\n')
+      );
+    }
+  }, [queued, clusters]);
+
+  // Deplace TOUTES les photos isolees (clusters d'1 element) dans un meme
+  // album d'un coup. Permet a l'user d'eviter 100 cartes/100 taps quand le
+  // clustering ne trouve pas de groupes evidents.
+  const moveAllSingletons = useCallback(
+    async (albumName: string) => {
+      if (!albumName.trim()) {
+        Alert.alert('Nom requis', "Tape un nom d'album avant de creer.");
+        return;
+      }
+      const singletonClusters = clusters.filter((c) => c.items.length === 1);
+      const items = singletonClusters.flatMap((c) => c.items);
+      if (items.length === 0) return;
+      setBusy(true);
+      try {
+        const assetIds = items.map((it) => it.id);
         const fakeAssets = assetIds.map((id) => ({ id } as MediaLibrary.Asset));
         const existing = await MediaLibrary.getAlbumAsync(albumName);
         let album: MediaLibrary.Album;
@@ -235,32 +318,75 @@ export default function TriScreen({ onBack }: TriScreenProps) {
         } else {
           album = await MediaLibrary.createAlbumAsync(albumName, fakeAssets[0] as any, false);
           if (fakeAssets.length > 1) {
-            await MediaLibrary.addAssetsToAlbumAsync(fakeAssets.slice(1) as any, album, false);
+            await MediaLibrary.addAssetsToAlbumAsync(
+              fakeAssets.slice(1) as any,
+              album,
+              false
+            );
           }
         }
-        succeeded.push(firstId);
+        Alert.alert('Album cree', `${items.length} photo(s) ajoutee(s) a "${albumName}".`);
+        setClusters((prev) => prev.filter((c) => c.items.length >= 2));
+        // Cleanup defensif de queued (les singletons n'y sont normalement pas
+        // mais si l'user a tape "+File" sur un, retirer la cle)
+        setQueued((prev) => {
+          if (prev.size === 0) return prev;
+          const next = new Map(prev);
+          for (const c of singletonClusters) {
+            const key = c.items[0]?.id;
+            if (key) next.delete(key);
+          }
+          return next;
+        });
       } catch (e: any) {
-        errors.push({ name: albumName, msg: e?.message ?? String(e) });
+        Alert.alert('Erreur', String(e?.message ?? e));
+      } finally {
+        setBusy(false);
       }
-    }
-    const okSet = new Set(succeeded);
-    setClusters((prev) => prev.filter((c) => !okSet.has(c.items[0]?.id ?? '')));
+    },
+    [clusters]
+  );
+
+  const skipAllSingletons = useCallback(() => {
+    setClusters((prev) => prev.filter((c) => c.items.length >= 2));
     setQueued((prev) => {
+      if (prev.size === 0) return prev;
       const next = new Map(prev);
-      for (const id of succeeded) next.delete(id);
+      for (const c of clusters) {
+        if (c.items.length === 1) {
+          const key = c.items[0]?.id;
+          if (key) next.delete(key);
+        }
+      }
       return next;
     });
-    setBusy(false);
-    if (errors.length === 0) {
-      Alert.alert('File traitee', `${succeeded.length} groupe(s) deplace(s).`);
-    } else {
+  }, [clusters]);
+
+  // Re-cluster TOUS les items courants avec un seuil reduit de 0.05 (min 0.65).
+  // Vide la file (les firstId changent potentiellement). Si la file n'est
+  // pas vide, on demande confirmation pour pas que ca disparaisse en silence.
+  const reclusterMoreLoose = useCallback(() => {
+    const doRecluster = () => {
+      const allItems = clusters.flatMap((c) => c.items);
+      if (allItems.length === 0) return;
+      const newThreshold = Math.max(0.65, threshold - 0.05);
+      setThreshold(newThreshold);
+      setClusters(greedyCluster(allItems, newThreshold));
+      setQueued(new Map());
+    };
+    if (queued.size > 0) {
       Alert.alert(
-        'File traitee avec erreurs',
-        `OK : ${succeeded.length}\nEchecs : ${errors.length}\n\n` +
-          errors.map((e) => `- ${e.name} : ${e.msg.slice(0, 80)}`).join('\n')
+        'Vider la file ?',
+        `Re-grouper va vider ta file de ${queued.size} groupe(s) en attente (les groupes vont changer). Continuer ?`,
+        [
+          { text: 'Annuler', style: 'cancel' },
+          { text: 'Continuer', style: 'destructive', onPress: doRecluster },
+        ]
       );
+    } else {
+      doRecluster();
     }
-  }, [queued, clusters]);
+  }, [clusters, threshold, queued]);
 
   // Retire des items d'un cluster (via modal contenu).
   // Migre la cle dans "queued" (firstItemId -> albumName) si items[0] change,
@@ -407,35 +533,63 @@ export default function TriScreen({ onBack }: TriScreenProps) {
             </View>
           </View>
         )}
-        {clusters.length === 0 && (
-          <Text style={styles.body}>Aucun groupe forme. Recommence avec d'autres images.</Text>
-        )}
-        {clusters.map((c, idx) => (
-          <ClusterCard
-            key={c.items[0]?.id ?? idx}
-            cluster={c}
-            index={idx + 1}
-            albums={albums}
-            onSeeAll={() => setOpenClusterIdx(idx)}
-            onMove={(name) => moveClusterToAlbum(c, name)}
-            onSkip={() => {
-              // Cleanup queue entry pour eviter l'orphan
-              const key = c.items[0]?.id;
-              if (key) {
-                setQueued((prev) => {
-                  if (!prev.has(key)) return prev;
-                  const next = new Map(prev);
-                  next.delete(key);
-                  return next;
-                });
-              }
-              setClusters((prev) => prev.filter((_, i) => i !== idx));
-            }}
-            onQueue={(name) => queueCluster(c, name)}
-            queuedName={queued.get(c.items[0]?.id ?? '')}
-            busy={busy}
-          />
-        ))}
+        {(() => {
+          // Split multi vs singletons : les singletons sont regroupes dans
+          // UNE seule carte speciale (SingletonGroupCard) en bas de la liste,
+          // pour eviter 100 cartes/taps quand CLIP ne trouve pas de groupes.
+          const multi = clusters
+            .map((c, idx) => ({ c, idx }))
+            .filter(({ c }) => c.items.length >= 2);
+          const singletonItems = clusters
+            .filter((c) => c.items.length === 1)
+            .flatMap((c) => c.items);
+          if (multi.length === 0 && singletonItems.length === 0) {
+            return (
+              <Text style={styles.body}>
+                Aucun groupe forme. Recommence avec d'autres images.
+              </Text>
+            );
+          }
+          return (
+            <>
+              {multi.map(({ c, idx }, multiIdx) => (
+                <ClusterCard
+                  key={c.items[0]?.id ?? idx}
+                  cluster={c}
+                  index={multiIdx + 1}
+                  albums={albums}
+                  onSeeAll={() => setOpenClusterIdx(idx)}
+                  onMove={(name) => moveClusterToAlbum(c, name)}
+                  onSkip={() => {
+                    const key = c.items[0]?.id;
+                    if (key) {
+                      setQueued((prev) => {
+                        if (!prev.has(key)) return prev;
+                        const next = new Map(prev);
+                        next.delete(key);
+                        return next;
+                      });
+                    }
+                    setClusters((prev) => prev.filter((_, i) => i !== idx));
+                  }}
+                  onQueue={(name) => queueCluster(c, name)}
+                  queuedName={queued.get(c.items[0]?.id ?? '')}
+                  busy={busy}
+                />
+              ))}
+              {singletonItems.length > 0 && (
+                <SingletonGroupCard
+                  items={singletonItems}
+                  albums={albums}
+                  onMoveAll={moveAllSingletons}
+                  onSkipAll={skipAllSingletons}
+                  onRecluster={threshold > 0.65 ? reclusterMoreLoose : undefined}
+                  busy={busy}
+                />
+              )}
+            </>
+          );
+        })()}
         {openClusterIdx !== null && (
           <ClusterContentsModal
             cluster={clusters[openClusterIdx]}
@@ -450,7 +604,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
     );
   }
 
-  // phase === 'ready' (ou 'picking')
+  // phase === 'ready'
   return (
     <ScrollView style={styles.screen}>
       <View style={styles.headerRow}>
@@ -490,14 +644,14 @@ export default function TriScreen({ onBack }: TriScreenProps) {
           <View style={styles.thresholdRow}>
             <TouchableOpacity
               style={styles.smallBtn}
-              onPress={() => setThreshold((t) => Math.max(0.7, t - 0.02))}
+              onPress={() => setThreshold((t) => Math.max(0.65, t - 0.02))}
               disabled={busy}
             >
               <Text style={styles.smallBtnText}>- permissif</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.smallBtn}
-              onPress={() => setThreshold((t) => Math.min(0.97, t + 0.02))}
+              onPress={() => setThreshold((t) => Math.min(0.95, t + 0.02))}
               disabled={busy}
             >
               <Text style={styles.smallBtnText}>+ strict</Text>
@@ -605,7 +759,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: '#2e3244',
+    borderColor: '#3a3f55',
   },
   queueClearText: { color: '#e4e6f0', fontSize: 12 },
   queueFlushBtn: {

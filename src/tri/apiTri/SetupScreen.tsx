@@ -30,6 +30,7 @@ interface Props {
 type Step = 'disclosure' | 'provider' | 'key';
 
 const GEMINI_KEY_URL = 'https://aistudio.google.com/apikey';
+const GEMINI_BILLING_URL = 'https://ai.google.dev/gemini-api/docs/billing';
 const OPENAI_KEY_URL = 'https://platform.openai.com/api-keys';
 const GEMINI_PRIVACY = 'https://ai.google.dev/gemini-api/terms';
 const OPENAI_PRIVACY = 'https://openai.com/policies/api-data-usage-policies';
@@ -70,8 +71,14 @@ export default function SetupScreen({ onDone, onBack }: Props) {
           <Text style={styles.warningTitle}>⚠️ Important sur la confidentialite</Text>
           <Text style={styles.warningBody}>
             En utilisant ce mode, tes photos seront envoyees a Google ou OpenAI
-            pour analyse. Elles ne sont pas stockees durablement par ces services
-            (selon leurs politiques) mais elles quittent ton telephone.
+            pour analyse. Selon le fournisseur et le tier choisi, elles peuvent
+            etre utilisees pour entrainer les modeles (notamment sur le tier
+            gratuit de Gemini).
+          </Text>
+          <Text style={styles.warningBody}>
+            👉 Lis TOUJOURS les conditions d'utilisation du fournisseur avant
+            d'envoyer tes donnees. Les liens sont fournis sur chaque carte
+            a l'etape suivante.
           </Text>
           <Text style={styles.warningBody}>
             Pour rester 100% offline, retourne au mode local (CLIP).
@@ -102,10 +109,34 @@ export default function SetupScreen({ onDone, onBack }: Props) {
           <Text style={styles.providerTag}>GRATUIT</Text>
           <Text style={styles.providerDesc}>
             Quota gratuit : 15 requetes/min, 1500/jour. Pour 200 photos ≈ 1 min d'analyse.
-            Cle creee gratuitement sur Google AI Studio.
+            Cle creee gratuitement sur Google AI Studio.{'\n\n'}
+            ⚠️ Tier gratuit : selon les conditions Google, tes photos peuvent etre
+            utilisees pour entrainer leurs modeles.
           </Text>
           <TouchableOpacity onPress={() => Linking.openURL(GEMINI_PRIVACY)}>
-            <Text style={styles.linkText}>Confidentialite Gemini ↗</Text>
+            <Text style={styles.linkText}>📖 Lire les conditions Gemini ↗</Text>
+          </TouchableOpacity>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.providerCard, provider === 'gemini-paid' && styles.providerCardSelected]}
+          onPress={() => setProvider('gemini-paid')}
+        >
+          <Text style={styles.providerTitle}>Google Gemini Flash (privee)</Text>
+          <Text style={styles.providerTagPrivacy}>PRIVE — BILLING ACTIVE</Text>
+          <Text style={styles.providerDesc}>
+            Meme API que le tier gratuit, mais SI tu as active le billing sur ton
+            projet Google Cloud, Google s'engage a NE PAS utiliser tes photos
+            pour entrainer ses modeles.{'\n\n'}
+            En pratique tu paies souvent 0$ tant que tu restes sous le quota
+            gratuit, mais tu beneficies de la politique privacy du tier paye.
+            A toi de verifier que ton projet a bien le billing actif.
+          </Text>
+          <TouchableOpacity onPress={() => Linking.openURL(GEMINI_BILLING_URL)}>
+            <Text style={styles.linkText}>💳 Activer le billing Google Cloud ↗</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => Linking.openURL(GEMINI_PRIVACY)}>
+            <Text style={styles.linkText}>📖 Lire les conditions Gemini ↗</Text>
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -116,22 +147,35 @@ export default function SetupScreen({ onDone, onBack }: Props) {
           <Text style={styles.providerTitle}>OpenAI GPT-5 nano</Text>
           <Text style={styles.providerTagPaid}>PAYANT ~0,05$ / 1000 photos</Text>
           <Text style={styles.providerDesc}>
-            Pas de quota gratuit. Compte OpenAI avec credits (5$ minimum a recharger
-            une fois). Le modele le moins cher d'OpenAI avec vision : ~50x moins cher
-            que Claude pour la meme qualite de regroupement. A choisir quand tu depasses
-            le quota Gemini gratuit (1500 req/jour).
+            Le modele le moins cher d'OpenAI avec vision integree. Tres bonne qualite
+            de regroupement par theme, lecture de scenes precise. A choisir quand tu
+            depasses le quota Gemini gratuit.{'\n\n'}
+            Politique API d'OpenAI : tes photos ne sont pas utilisees pour entrainer
+            leurs modeles par defaut. Compte OpenAI avec credits requis (5$ minimum
+            a recharger une fois, dure des mois pour un usage perso).
           </Text>
           <TouchableOpacity onPress={() => Linking.openURL(OPENAI_PRIVACY)}>
-            <Text style={styles.linkText}>Confidentialite OpenAI ↗</Text>
+            <Text style={styles.linkText}>📖 Lire les conditions OpenAI ↗</Text>
           </TouchableOpacity>
         </TouchableOpacity>
+
+        <Text style={styles.helpText}>
+          Rappel : lis toujours les conditions du fournisseur avant d'envoyer tes
+          photos. Les liens ci-dessus pointent vers la doc officielle.
+        </Text>
 
         <View style={styles.actionsRow}>
           <TouchableOpacity style={styles.secondaryBtn} onPress={() => setStep('disclosure')}>
             <Text style={styles.secondaryBtnText}>Retour</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('key')}>
-            <Text style={styles.primaryBtnText}>Choisir {provider === 'gemini' ? 'Gemini' : 'GPT-5 nano'}</Text>
+            <Text style={styles.primaryBtnText}>
+              Choisir {provider === 'gemini'
+                ? 'Gemini'
+                : provider === 'gemini-paid'
+                ? 'Gemini (privee)'
+                : 'GPT-5 nano'}
+            </Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -139,24 +183,38 @@ export default function SetupScreen({ onDone, onBack }: Props) {
   }
 
   // step === 'key'
-  const keyUrl = provider === 'gemini' ? GEMINI_KEY_URL : OPENAI_KEY_URL;
+  // 'gemini' et 'gemini-paid' utilisent la meme URL de creation de cle :
+  // c'est Google AI Studio dans les deux cas. Le billing s'active separement
+  // dans Google Cloud Console.
+  const isGemini = provider === 'gemini' || provider === 'gemini-paid';
+  const keyUrl = isGemini ? GEMINI_KEY_URL : OPENAI_KEY_URL;
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
-      <Text style={styles.title}>Cle API {provider === 'gemini' ? 'Gemini' : 'OpenAI'}</Text>
+      <Text style={styles.title}>
+        Cle API {isGemini ? 'Gemini' : 'OpenAI'}
+        {provider === 'gemini-paid' ? ' (privee)' : ''}
+      </Text>
       <Text style={styles.body}>
-        1. Va sur la page de creation de cle de {provider === 'gemini' ? 'Google AI Studio' : 'OpenAI Platform'}.
+        1. Va sur la page de creation de cle de {isGemini ? 'Google AI Studio' : 'OpenAI Platform'}.
         {'\n'}2. Cree une cle (gratuit pour Gemini, compte OpenAI avec credits pour GPT-5 nano).
         {'\n'}3. Copie-la et colle-la ci-dessous.
+        {provider === 'gemini-paid' &&
+          "\n4. IMPORTANT : verifie aussi que le billing est active sur ton projet Google Cloud (sinon, c'est le tier gratuit qui s'applique cote privacy)."}
       </Text>
       <TouchableOpacity onPress={() => Linking.openURL(keyUrl)}>
         <Text style={styles.linkText}>Ouvrir la page de creation de cle ↗</Text>
       </TouchableOpacity>
+      {provider === 'gemini-paid' && (
+        <TouchableOpacity onPress={() => Linking.openURL(GEMINI_BILLING_URL)}>
+          <Text style={styles.linkText}>💳 Doc Google sur l'activation du billing ↗</Text>
+        </TouchableOpacity>
+      )}
       <Text style={styles.label}>Cle API (collee depuis la page) :</Text>
       <TextInput
         style={styles.keyInput}
         value={apiKey}
         onChangeText={setApiKey}
-        placeholder={provider === 'gemini' ? 'AIza...' : 'sk-...'}
+        placeholder={isGemini ? 'AIza...' : 'sk-...'}
         placeholderTextColor="#5a5e70"
         secureTextEntry
         autoCapitalize="none"
@@ -211,6 +269,7 @@ const styles = StyleSheet.create({
   providerTitle: { color: '#e4e6f0', fontSize: 16, fontWeight: '700', marginBottom: 4 },
   providerTag: { color: '#00b894', fontSize: 12, fontWeight: '700', marginBottom: 6 },
   providerTagPaid: { color: '#ffd43b', fontSize: 12, fontWeight: '700', marginBottom: 6 },
+  providerTagPrivacy: { color: '#74b9ff', fontSize: 12, fontWeight: '700', marginBottom: 6 },
   providerDesc: { color: '#8b8fa3', fontSize: 13, lineHeight: 18, marginBottom: 6 },
   linkText: { color: '#a29bfe', fontSize: 13, marginTop: 4, marginBottom: 4 },
   label: { color: '#e4e6f0', fontSize: 13, marginTop: 14, marginBottom: 6, fontWeight: '600' },

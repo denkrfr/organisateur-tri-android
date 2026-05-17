@@ -104,7 +104,13 @@ export default function TriModeScreen({ onChooseLocal, onChooseApi, onBack }: Pr
         </Text>
         {configuredProvider && (
           <Text style={styles.providerNote}>
-            ✓ Configure : {configuredProvider === 'gemini' ? 'Google Gemini' : 'OpenAI GPT-5 nano'}
+            ✓ Configure : {
+              configuredProvider === 'gemini'
+                ? 'Google Gemini (gratuit)'
+                : configuredProvider === 'gemini-paid'
+                ? 'Google Gemini (privee)'
+                : 'OpenAI GPT-5 nano'
+            }
           </Text>
         )}
       </TouchableOpacity>

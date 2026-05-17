@@ -205,7 +205,7 @@ export default function ClusterCard({
           onPress={() => onMove(targetName)}
           disabled={busy || !canAct}
         >
-          <Text style={styles.btnText} numberOfLines={1}>
+          <Text style={styles.btnText} numberOfLines={2}>
             {!canAct
               ? "Tape un nom d'album"
               : willAdd
@@ -228,7 +228,7 @@ export default function ClusterCard({
           onPress={() => onQueue(targetName)}
           disabled={busy || !canAct}
         >
-          <Text style={styles.queueBtnText} numberOfLines={1}>
+          <Text style={styles.queueBtnText} numberOfLines={2}>
             {queuedName
               ? `✓ En file → "${queuedName}"  (tap pour mettre a jour)`
               : '+ Ajouter a la file (deplacer plus tard en un coup)'}
