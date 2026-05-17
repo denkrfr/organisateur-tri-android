@@ -21,6 +21,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 import {
   isModelDownloaded,
@@ -74,6 +75,18 @@ export default function TriScreen({ onBack }: TriScreenProps) {
       setPhase(ok ? 'ready' : 'need_download');
     })();
   }, []);
+
+  // Garde l'ecran allume pendant les phases longues (DL modele + analyse
+  // CLIP qui prend 2-5s par photo). Sans ca, Android peut tuer l'app si
+  // l'user eteint l'ecran ou switch d'app, perdant tout l'avancement.
+  useEffect(() => {
+    if (phase === 'analyzing' || phase === 'downloading') {
+      activateKeepAwakeAsync('tri-clip');
+      return () => {
+        deactivateKeepAwake('tri-clip');
+      };
+    }
+  }, [phase]);
 
   // Telecharge le modele
   const startDownload = useCallback(async () => {

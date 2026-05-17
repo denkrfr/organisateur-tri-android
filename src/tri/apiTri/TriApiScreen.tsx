@@ -21,6 +21,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import * as MediaLibrary from 'expo-media-library';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   getConfiguredProvider,
   loadApiKey,
@@ -71,6 +72,17 @@ export default function TriApiScreen({ onBack }: Props) {
       }
     })();
   }, []);
+
+  // Garde l'ecran allume pendant l'analyse IA (peut prendre 30s-2min selon
+  // la taille de l'album + latence reseau). Evite que Android tue l'app.
+  useEffect(() => {
+    if (phase === 'analyzing') {
+      activateKeepAwakeAsync('tri-api');
+      return () => {
+        deactivateKeepAwake('tri-api');
+      };
+    }
+  }, [phase]);
 
   // Charge liste albums quand on est pret
   useEffect(() => {

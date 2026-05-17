@@ -44,6 +44,8 @@ import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { useKeepAwake } from 'expo-keep-awake';
+import * as IntentLauncher from 'expo-intent-launcher';
 import { inflate } from 'pako';
 import TriScreen from './src/tri/TriScreen';
 import TriModeScreen from './src/tri/TriModeScreen';
@@ -1031,7 +1033,26 @@ function ScanScreen({
   progress: { current: number; total: number; label: string };
   onCancel: () => void;
 }) {
+  // Empeche l'ecran de s'eteindre pendant le scan. Sans ca, Android peut
+  // mettre l'app en background apres ~30s d'ecran off et la tuer (perte
+  // de l'avancement). Actif uniquement tant que ce composant est monte.
+  useKeepAwake();
+
   const pct = progress.total > 0 ? Math.round((progress.current * 100) / progress.total) : 0;
+
+  const openBatterySettings = async () => {
+    try {
+      await IntentLauncher.startActivityAsync(
+        IntentLauncher.ActivityAction.IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+      );
+    } catch {
+      Alert.alert(
+        'Reglages introuvables',
+        "Va manuellement dans Reglages > Apps > Organisateur > Batterie > Sans restriction."
+      );
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.scanWrap}>
@@ -1044,6 +1065,23 @@ function ScanScreen({
           {progress.current} / {progress.total} ({pct}%)
         </Text>
         <ActivityIndicator size="large" color={COLORS.accent2} style={{ marginTop: 22 }} />
+
+        <View style={styles.tipBox}>
+          <Text style={styles.tipTitle}>💡 Garde l'app au premier plan</Text>
+          <Text style={styles.tipBody}>
+            L'ecran reste allume automatiquement pendant le scan. Mais si tu
+            l'eteins manuellement ou changes d'app, Android peut tuer le
+            scan (surtout sur Samsung / Xiaomi / OnePlus).
+          </Text>
+          <Text style={styles.tipBody}>
+            Pour eviter ca, autorise Organisateur a tourner sans restriction
+            de batterie (one-time) :
+          </Text>
+          <TouchableOpacity style={styles.tipBtn} onPress={openBatterySettings}>
+            <Text style={styles.tipBtnText}>Ouvrir les reglages batterie</Text>
+          </TouchableOpacity>
+        </View>
+
         <TouchableOpacity style={styles.secondaryBtn} onPress={onCancel}>
           <Text style={styles.secondaryBtnText}>Annuler</Text>
         </TouchableOpacity>
@@ -1992,6 +2030,26 @@ const styles = StyleSheet.create({
   },
   pbarInner: { height: '100%', backgroundColor: COLORS.accent, borderRadius: 5 },
   scanCount: { color: COLORS.text2, fontSize: 13, marginTop: 8 },
+  // Tip box (notice anti-app-kill sur ScanScreen)
+  tipBox: {
+    marginTop: 28,
+    backgroundColor: COLORS.card,
+    borderColor: COLORS.warn,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 14,
+    width: '100%',
+  },
+  tipTitle: { color: COLORS.warn, fontSize: 14, fontWeight: '700', marginBottom: 6 },
+  tipBody: { color: COLORS.text, fontSize: 13, lineHeight: 18, marginBottom: 8 },
+  tipBtn: {
+    backgroundColor: COLORS.warn,
+    paddingVertical: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  tipBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 13 },
   // Results
   resultsHeader: { marginBottom: 14 },
   resultsActions: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 },
