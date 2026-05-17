@@ -266,17 +266,37 @@ export default function TriApiScreen({ onBack }: Props) {
   }, [queued, clusters]);
 
   const updateClusterItems = useCallback((idx: number, kept: ClusterItem[]) => {
+    // On capture oldFirstId / newFirstId pour eventuellement migrer la cle
+    // dans la Map "queued" (clusterFirstId -> albumName). Sinon, retirer la
+    // 1ere photo d'un cluster en file la rendrait orpheline (le badge "en
+    // file" disparaitrait visuellement mais l'entree persisterait).
+    let oldFirstId: string | undefined;
+    let newFirstId: string | undefined;
     setClusters((prev) => {
+      const cur = prev[idx];
+      if (!cur) return prev;
       const next = [...prev];
       const keptIds = new Set(kept.map((k) => k.id));
-      const filteredItems = next[idx].items.filter((it) => keptIds.has(it.id));
+      oldFirstId = cur.items[0]?.id;
+      const filteredItems = cur.items.filter((it) => keptIds.has(it.id));
+      newFirstId = filteredItems[0]?.id;
       if (filteredItems.length === 0) {
         next.splice(idx, 1);
       } else {
-        next[idx] = { ...next[idx], items: filteredItems };
+        next[idx] = { ...cur, items: filteredItems };
       }
       return next;
     });
+    if (oldFirstId && oldFirstId !== newFirstId) {
+      setQueued((q) => {
+        if (!q.has(oldFirstId!)) return q;
+        const nq = new Map(q);
+        const name = nq.get(oldFirstId!);
+        nq.delete(oldFirstId!);
+        if (newFirstId && name) nq.set(newFirstId, name);
+        return nq;
+      });
+    }
   }, []);
 
   // ============================================================================
@@ -369,7 +389,19 @@ export default function TriApiScreen({ onBack }: Props) {
             albums={albums}
             onSeeAll={() => setOpenClusterIdx(idx)}
             onMove={(name) => moveClusterToAlbum(c, name)}
-            onSkip={() => setClusters((prev) => prev.filter((_, i) => i !== idx))}
+            onSkip={() => {
+              // Cleanup queue entry pour eviter l'orphan (count gonfle)
+              const key = c.items[0]?.id;
+              if (key) {
+                setQueued((prev) => {
+                  if (!prev.has(key)) return prev;
+                  const next = new Map(prev);
+                  next.delete(key);
+                  return next;
+                });
+              }
+              setClusters((prev) => prev.filter((_, i) => i !== idx));
+            }}
             onQueue={(name) => queueCluster(c, name)}
             queuedName={queued.get(c.items[0]?.id ?? '')}
             busy={busy}

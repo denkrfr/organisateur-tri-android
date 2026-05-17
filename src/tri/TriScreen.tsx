@@ -262,10 +262,18 @@ export default function TriScreen({ onBack }: TriScreenProps) {
     }
   }, [queued, clusters]);
 
-  // Retire des items d'un cluster (via modal contenu)
+  // Retire des items d'un cluster (via modal contenu).
+  // Migre la cle dans "queued" (firstItemId -> albumName) si items[0] change,
+  // sinon l'entree devient orpheline (badge "en file" disparait visuellement).
   const updateClusterItems = useCallback((idx: number, kept: ClusterItem[]) => {
+    let oldFirstId: string | undefined;
+    let newFirstId: string | undefined;
     setClusters((prev) => {
+      const cur = prev[idx];
+      if (!cur) return prev;
       const next = [...prev];
+      oldFirstId = cur.items[0]?.id;
+      newFirstId = kept[0]?.id;
       if (kept.length === 0) {
         next.splice(idx, 1);
       } else {
@@ -273,6 +281,16 @@ export default function TriScreen({ onBack }: TriScreenProps) {
       }
       return next;
     });
+    if (oldFirstId && oldFirstId !== newFirstId) {
+      setQueued((q) => {
+        if (!q.has(oldFirstId!)) return q;
+        const nq = new Map(q);
+        const name = nq.get(oldFirstId!);
+        nq.delete(oldFirstId!);
+        if (newFirstId && name) nq.set(newFirstId, name);
+        return nq;
+      });
+    }
   }, []);
 
   // ============================================================================
@@ -400,7 +418,19 @@ export default function TriScreen({ onBack }: TriScreenProps) {
             albums={albums}
             onSeeAll={() => setOpenClusterIdx(idx)}
             onMove={(name) => moveClusterToAlbum(c, name)}
-            onSkip={() => setClusters((prev) => prev.filter((_, i) => i !== idx))}
+            onSkip={() => {
+              // Cleanup queue entry pour eviter l'orphan
+              const key = c.items[0]?.id;
+              if (key) {
+                setQueued((prev) => {
+                  if (!prev.has(key)) return prev;
+                  const next = new Map(prev);
+                  next.delete(key);
+                  return next;
+                });
+              }
+              setClusters((prev) => prev.filter((_, i) => i !== idx));
+            }}
             onQueue={(name) => queueCluster(c, name)}
             queuedName={queued.get(c.items[0]?.id ?? '')}
             busy={busy}
