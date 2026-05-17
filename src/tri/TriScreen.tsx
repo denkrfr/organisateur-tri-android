@@ -9,7 +9,7 @@
  *   5. Au move : MediaLibrary.createAlbumAsync ou addAssetsToAlbumAsync
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -18,8 +18,8 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native';
-import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
@@ -37,6 +37,18 @@ import SingletonGroupCard from './SingletonGroupCard';
 
 interface TriScreenProps {
   onBack: () => void;
+}
+
+// Nettoie un nom d'album : retire caracteres interdits Android pour noms de
+// fichier/dossier, trim, cape a 100 chars. Si le resultat est vide, retourne
+// "Sans nom" pour eviter de crasher createAlbumAsync.
+function sanitizeAlbumName(name: string): string {
+  const cleaned = name
+    .replace(/[\/\\:*?"<>|\x00-\x1f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+  return cleaned.length > 0 ? cleaned : 'Sans nom';
 }
 
 type Phase = 'check_model' | 'no_onnx' | 'need_download' | 'downloading' | 'ready' | 'analyzing' | 'results';
@@ -63,6 +75,17 @@ export default function TriScreen({ onBack }: TriScreenProps) {
   const [busy, setBusy] = useState(false);
   // Mode batch : firstItemId -> albumName cible (cf TriApiScreen pour la rationale)
   const [queued, setQueued] = useState<Map<string, string>>(new Map());
+  // Cancellation : pour pouvoir interrompre une analyse longue (500 photos =
+  // potentiellement 25 min). Sans ca, l'user qui appuie back perdait tout
+  // ET un setState arrivait sur un composant unmount.
+  const analysisCancelRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      analysisCancelRef.current = true;
+    };
+  }, []);
 
   // 1. Au mount : check d'abord la dispo onnxruntime, puis le modele
   useEffect(() => {
@@ -144,18 +167,28 @@ export default function TriScreen({ onBack }: TriScreenProps) {
     }
   }, []);
 
+  // Annule l'analyse en cours et revient sur 'ready'. Marque aussi mountedRef
+  // false pour stopper les setState orphelins.
+  const cancelAnalysis = useCallback(() => {
+    analysisCancelRef.current = true;
+    if (mountedRef.current) setPhase('ready');
+  }, []);
+
   // Lance l'analyse
   const startAnalysis = useCallback(async () => {
     if (pickedAssets.length === 0) {
       Alert.alert('Vide', 'Choisis au moins un album a analyser.');
       return;
     }
+    analysisCancelRef.current = false;
     setPhase('analyzing');
     setAnalysisProgress(0);
     setAnalysisTotal(pickedAssets.length);
 
     const items: ClusterItem[] = [];
     for (let i = 0; i < pickedAssets.length; i++) {
+      // Check cancellation a chaque iteration (user a tape "Annuler" ou back)
+      if (analysisCancelRef.current || !mountedRef.current) return;
       const a = pickedAssets[i];
       // Resolve uri locale via getAssetInfoAsync
       let localUri = a.uri;
@@ -167,23 +200,55 @@ export default function TriScreen({ onBack }: TriScreenProps) {
       } catch {
         // ignore
       }
+      if (analysisCancelRef.current || !mountedRef.current) return;
       const emb = await encodeImage(localUri);
+      if (analysisCancelRef.current || !mountedRef.current) return;
       if (emb) {
         items.push({ id: a.id, uri: localUri, filename: a.filename, embedding: emb });
       }
       setAnalysisProgress(i + 1);
     }
 
+    if (analysisCancelRef.current || !mountedRef.current) return;
     const groups = greedyCluster(items, threshold);
+    if (!mountedRef.current) return;
     setClusters(groups);
     setPhase('results');
   }, [pickedAssets, threshold]);
 
+  // Intercept hardware back pendant analyse / DL : demander confirmation pour
+  // pas perdre 25 min d'analyse par mauvais reflex
+  useEffect(() => {
+    if (phase !== 'analyzing' && phase !== 'downloading') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      Alert.alert(
+        phase === 'analyzing' ? 'Annuler l\'analyse ?' : 'Annuler le telechargement ?',
+        phase === 'analyzing'
+          ? 'L\'avancement sera perdu (tu peux toujours relancer).'
+          : 'Le modele ne sera pas telecharge.',
+        [
+          { text: 'Continuer', style: 'cancel' },
+          {
+            text: 'Annuler',
+            style: 'destructive',
+            onPress: () => {
+              if (phase === 'analyzing') cancelAnalysis();
+              else setPhase('need_download');
+            },
+          },
+        ]
+      );
+      return true;
+    });
+    return () => sub.remove();
+  }, [phase, cancelAnalysis]);
+
   // Action : creer un album + y deplacer les fichiers d'un cluster
   const moveClusterToAlbum = useCallback(
     async (cluster: Cluster, albumName: string) => {
-      if (!albumName.trim()) {
-        Alert.alert('Nom requis', "Tape un nom d'album avant de creer.");
+      const clean = sanitizeAlbumName(albumName);
+      if (!albumName.trim() || clean === 'Sans nom') {
+        Alert.alert('Nom requis', "Tape un nom d'album valide avant de creer.");
         return;
       }
       setBusy(true);
@@ -191,20 +256,20 @@ export default function TriScreen({ onBack }: TriScreenProps) {
         const assetIds = cluster.items.map((it) => it.id);
         const fakeAssets = assetIds.map((id) => ({ id } as MediaLibrary.Asset));
         // Cree l'album avec le 1er asset, puis ajoute le reste
-        const existing = await MediaLibrary.getAlbumAsync(albumName);
+        const existing = await MediaLibrary.getAlbumAsync(clean);
         let album: MediaLibrary.Album;
         if (existing) {
           album = existing;
           await MediaLibrary.addAssetsToAlbumAsync(fakeAssets as any, album, false);
         } else {
-          album = await MediaLibrary.createAlbumAsync(albumName, fakeAssets[0] as any, false);
+          album = await MediaLibrary.createAlbumAsync(clean, fakeAssets[0] as any, false);
           if (fakeAssets.length > 1) {
             await MediaLibrary.addAssetsToAlbumAsync(fakeAssets.slice(1) as any, album, false);
           }
         }
         Alert.alert(
           'Album cree',
-          `${cluster.items.length} fichier(s) ajoute(s) a "${albumName}".`
+          `${cluster.items.length} fichier(s) ajoute(s) a "${clean}".`
         );
         // Retire le cluster de la liste
         setClusters((prev) => prev.filter((c) => c !== cluster));
@@ -220,13 +285,32 @@ export default function TriScreen({ onBack }: TriScreenProps) {
   // Ajoute / met a jour un cluster dans la file d'attente
   const queueCluster = useCallback((cluster: Cluster, albumName: string) => {
     const key = cluster.items[0]?.id;
-    if (!key || !albumName.trim()) return;
+    const clean = sanitizeAlbumName(albumName);
+    if (!key || !albumName.trim() || clean === 'Sans nom') return;
     setQueued((prev) => {
       const next = new Map(prev);
-      next.set(key, albumName.trim());
+      next.set(key, clean);
       return next;
     });
   }, []);
+
+  // Vider la file avec confirmation (destructif, peut faire perdre 30 noms
+  // tapes a la main).
+  const clearQueueWithConfirm = useCallback(() => {
+    if (queued.size === 0) return;
+    Alert.alert(
+      'Vider la file ?',
+      `Tu vas perdre les ${queued.size} groupe(s) prepares (noms d'album et associations).`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Vider',
+          style: 'destructive',
+          onPress: () => setQueued(new Map()),
+        },
+      ]
+    );
+  }, [queued]);
 
   // Flush : groupe tous les clusters en file PAR ALBUM CIBLE (insensible
   // casse/accents), puis fait 1-2 appels MediaLibrary par album unique
@@ -248,11 +332,12 @@ export default function TriScreen({ onBack }: TriScreenProps) {
     for (const [firstId, albumName] of queued) {
       const cluster = clusters.find((c) => c.items[0]?.id === firstId);
       if (!cluster) continue;
-      const key = normalize(albumName);
+      const cleanName = sanitizeAlbumName(albumName);
+      const key = normalize(cleanName);
       const entry = byAlbum.get(key) ?? {
         items: [],
         firstIds: [],
-        displayName: albumName,
+        displayName: cleanName,
       };
       entry.items.push(...cluster.items);
       entry.firstIds.push(firstId);
@@ -312,8 +397,9 @@ export default function TriScreen({ onBack }: TriScreenProps) {
   // clustering ne trouve pas de groupes evidents.
   const moveAllSingletons = useCallback(
     async (albumName: string) => {
-      if (!albumName.trim()) {
-        Alert.alert('Nom requis', "Tape un nom d'album avant de creer.");
+      const clean = sanitizeAlbumName(albumName);
+      if (!albumName.trim() || clean === 'Sans nom') {
+        Alert.alert('Nom requis', "Tape un nom d'album valide avant de creer.");
         return;
       }
       const singletonClusters = clusters.filter((c) => c.items.length === 1);
@@ -323,13 +409,13 @@ export default function TriScreen({ onBack }: TriScreenProps) {
       try {
         const assetIds = items.map((it) => it.id);
         const fakeAssets = assetIds.map((id) => ({ id } as MediaLibrary.Asset));
-        const existing = await MediaLibrary.getAlbumAsync(albumName);
+        const existing = await MediaLibrary.getAlbumAsync(clean);
         let album: MediaLibrary.Album;
         if (existing) {
           album = existing;
           await MediaLibrary.addAssetsToAlbumAsync(fakeAssets as any, album, false);
         } else {
-          album = await MediaLibrary.createAlbumAsync(albumName, fakeAssets[0] as any, false);
+          album = await MediaLibrary.createAlbumAsync(clean, fakeAssets[0] as any, false);
           if (fakeAssets.length > 1) {
             await MediaLibrary.addAssetsToAlbumAsync(
               fakeAssets.slice(1) as any,
@@ -338,7 +424,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
             );
           }
         }
-        Alert.alert('Album cree', `${items.length} photo(s) ajoutee(s) a "${albumName}".`);
+        Alert.alert('Album cree', `${items.length} photo(s) ajoutee(s) a "${clean}".`);
         setClusters((prev) => prev.filter((c) => c.items.length >= 2));
         // Cleanup defensif de queued (les singletons n'y sont normalement pas
         // mais si l'user a tape "+File" sur un, retirer la cle)
@@ -508,6 +594,21 @@ export default function TriScreen({ onBack }: TriScreenProps) {
           <View style={[styles.progressFill, { width: `${pct}%` }]} />
         </View>
         <Text style={styles.muted}>~2-5 secondes par image, sois patient</Text>
+        <TouchableOpacity
+          style={[styles.secondaryCancelBtn]}
+          onPress={() => {
+            Alert.alert(
+              "Annuler l'analyse ?",
+              "L'avancement sera perdu. Tu pourras relancer.",
+              [
+                { text: 'Continuer', style: 'cancel' },
+                { text: 'Annuler', style: 'destructive', onPress: cancelAnalysis },
+              ]
+            );
+          }}
+        >
+          <Text style={styles.secondaryCancelText}>Annuler l'analyse</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -516,8 +617,8 @@ export default function TriScreen({ onBack }: TriScreenProps) {
     return (
       <ScrollView style={styles.screen} keyboardShouldPersistTaps="handled">
         <View style={styles.headerRow}>
-          <TouchableOpacity onPress={onBack}>
-            <Text style={styles.link}>← Retour</Text>
+          <TouchableOpacity onPress={onBack} disabled={busy}>
+            <Text style={[styles.link, busy && { opacity: 0.4 }]}>← Retour</Text>
           </TouchableOpacity>
           <Text style={styles.titleSmall}>
             {clusters.length} groupe(s) trouve(s)
@@ -531,7 +632,7 @@ export default function TriScreen({ onBack }: TriScreenProps) {
             <View style={styles.queueBarActions}>
               <TouchableOpacity
                 style={styles.queueClearBtn}
-                onPress={() => setQueued(new Map())}
+                onPress={clearQueueWithConfirm}
                 disabled={busy}
               >
                 <Text style={styles.queueClearText}>Vider</Text>
@@ -621,8 +722,8 @@ export default function TriScreen({ onBack }: TriScreenProps) {
   return (
     <ScrollView style={styles.screen}>
       <View style={styles.headerRow}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.link}>← Retour</Text>
+        <TouchableOpacity onPress={onBack} disabled={busy}>
+          <Text style={[styles.link, busy && { opacity: 0.4 }]}>← Retour</Text>
         </TouchableOpacity>
         <Text style={styles.titleSmall}>Tri par ressemblance</Text>
       </View>
@@ -636,7 +737,11 @@ export default function TriScreen({ onBack }: TriScreenProps) {
         return (
           <TouchableOpacity
             key={al.id}
-            style={[styles.albumRow, selected && styles.albumRowSelected]}
+            style={[
+              styles.albumRow,
+              selected && styles.albumRowSelected,
+              busy && { opacity: 0.5 },
+            ]}
             onPress={() => pickAlbum(al)}
             disabled={busy}
           >
@@ -645,6 +750,12 @@ export default function TriScreen({ onBack }: TriScreenProps) {
           </TouchableOpacity>
         );
       })}
+      {busy && (
+        <View style={styles.busyOverlay}>
+          <ActivityIndicator size="large" color="#6c5ce7" />
+          <Text style={styles.muted}>Chargement des photos...</Text>
+        </View>
+      )}
 
       {pickedAssets.length > 0 && (
         <View style={styles.summaryBox}>
@@ -753,6 +864,21 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   progressFill: { height: '100%', backgroundColor: '#6c5ce7' },
+  secondaryCancelBtn: {
+    marginTop: 24,
+    backgroundColor: '#252836',
+    borderColor: '#3a3f55',
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+    borderRadius: 8,
+  },
+  secondaryCancelText: { color: '#e4e6f0', fontSize: 13, fontWeight: '600' },
+  busyOverlay: {
+    marginTop: 18,
+    padding: 16,
+    alignItems: 'center',
+  },
   queueBar: {
     backgroundColor: 'rgba(0, 184, 148, 0.10)',
     borderColor: '#00b894',

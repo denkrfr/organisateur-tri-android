@@ -23,10 +23,17 @@ import {
   TouchableOpacity,
   TextInput,
   ScrollView,
+  Keyboard,
 } from 'react-native';
 import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
 import type { ClusterItem } from './clustering';
+
+const MAX_ALBUM_NAME = 100;
+// Cap dur sur le nombre de thumbnails montees meme en expanded. Sur 1000
+// photos isolees, monter 1000 Image en parallele = OOM. L'user peut quand
+// meme deplacer toutes les 1000 via le bouton "Creer X et deplacer les N".
+const MAX_THUMBS_EXPANDED = 60;
 
 interface Props {
   items: ClusterItem[];
@@ -58,8 +65,17 @@ export default function SingletonGroupCard({
   const [focused, setFocused] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
-  const visible = expanded ? items : items.slice(0, MAX_SHOW);
+  // En expanded on cape a MAX_THUMBS_EXPANDED pour eviter de monter des
+  // centaines de Image en parallele (OOM). Si depasse, on indique combien
+  // sont caches mais ils restent comptes pour l'action "Creer et deplacer les N".
+  const visible = expanded
+    ? items.slice(0, MAX_THUMBS_EXPANDED)
+    : items.slice(0, MAX_SHOW);
   const remaining = items.length - MAX_SHOW;
+  const hiddenInExpanded =
+    expanded && items.length > MAX_THUMBS_EXPANDED
+      ? items.length - MAX_THUMBS_EXPANDED
+      : 0;
 
   const trimmed = name.trim();
   const normalizedTyped = normalize(trimmed);
@@ -99,6 +115,9 @@ export default function SingletonGroupCard({
             source={{ uri: it.uri }}
             style={styles.thumb}
             contentFit="cover"
+            cachePolicy="memory-disk"
+            recyclingKey={it.id}
+            transition={120}
           />
         ))}
         {!expanded && remaining > 0 && (
@@ -106,6 +125,12 @@ export default function SingletonGroupCard({
             <Text style={styles.moreText}>+{remaining}</Text>
             <Text style={styles.moreSubText}>voir tout</Text>
           </TouchableOpacity>
+        )}
+        {hiddenInExpanded > 0 && (
+          <View style={styles.moreBtn}>
+            <Text style={styles.moreText}>+{hiddenInExpanded}</Text>
+            <Text style={styles.moreSubText}>(caches)</Text>
+          </View>
         )}
       </ScrollView>
 
@@ -119,6 +144,9 @@ export default function SingletonGroupCard({
         onBlur={() => setTimeout(() => setFocused(false), 150)}
         editable={!busy}
         autoCapitalize="words"
+        maxLength={MAX_ALBUM_NAME}
+        returnKeyType="done"
+        onSubmitEditing={() => Keyboard.dismiss()}
       />
 
       {showSuggestions && (
@@ -153,7 +181,10 @@ export default function SingletonGroupCard({
           (!canAct || busy) && styles.btnDisabled,
           canAct && willAdd && styles.btnAddExisting,
         ]}
-        onPress={() => onMoveAll(targetName)}
+        onPress={() => {
+          Keyboard.dismiss();
+          onMoveAll(targetName);
+        }}
         disabled={!canAct || busy}
       >
         <Text style={styles.primaryBtnText} numberOfLines={2}>

@@ -23,7 +23,7 @@
  *   - Suppression via MediaLibrary.deleteAssetsAsync -> dialog systeme + corbeille Galerie
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -884,6 +884,40 @@ function HomeScreen({
 // ============================================================================
 // Albums screen : choisir les dossiers a scanner
 // ============================================================================
+// Row memoisee pour eviter re-render de toutes les rows a chaque toggle.
+function AlbumPickerRow({
+  item,
+  isSelected,
+  onToggle,
+}: {
+  item: AlbumItem;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <Pressable
+      style={[
+        styles.fileRow,
+        { backgroundColor: COLORS.card, marginBottom: 8 },
+        isSelected && styles.albumRowSelected,
+      ]}
+      onPress={() => onToggle(item.id)}
+    >
+      <Text style={styles.albumIcon}>📁</Text>
+      <View style={{ flex: 1, marginLeft: 10 }}>
+        <Text style={styles.fileName} numberOfLines={1}>
+          {item.title}
+        </Text>
+        <Text style={styles.fileSize}>{item.assetCount} fichier(s)</Text>
+      </View>
+      <View style={[styles.checkbox, isSelected && styles.checkboxAlbumOn]}>
+        {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+      </View>
+    </Pressable>
+  );
+}
+const AlbumPickerRowMemo = React.memo(AlbumPickerRow);
+
 function AlbumsScreen({
   albums,
   loading,
@@ -899,6 +933,12 @@ function AlbumsScreen({
   onLaunchScan: () => void;
   onBack: () => void;
 }) {
+  // Ref pour stabilite de toggle (cf CorbeilleScreen pour rationale).
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
   const totalSelectedAssets = useMemo(
     () =>
       albums
@@ -907,12 +947,13 @@ function AlbumsScreen({
     [albums, selected]
   );
 
-  const toggle = (id: string) => {
-    const next = new Set(selected);
+  const toggle = useCallback((id: string) => {
+    const cur = selectedRef.current;
+    const next = new Set(cur);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelected(next);
-  };
+  }, [setSelected]);
 
   const checkAll = () => setSelected(new Set(albums.map((a) => a.id)));
   const checkNone = () => setSelected(new Set());
@@ -969,33 +1010,17 @@ function AlbumsScreen({
 
       <FlatList
         data={albums}
+        extraData={selected}
         keyExtractor={(a) => a.id}
         contentContainerStyle={{ paddingBottom: 130 }}
+        initialNumToRender={15}
+        windowSize={9}
         renderItem={({ item }) => (
-          <Pressable
-            style={[
-              styles.fileRow,
-              { backgroundColor: COLORS.card, marginBottom: 8 },
-              selected.has(item.id) && styles.albumRowSelected,
-            ]}
-            onPress={() => toggle(item.id)}
-          >
-            <Text style={styles.albumIcon}>📁</Text>
-            <View style={{ flex: 1, marginLeft: 10 }}>
-              <Text style={styles.fileName} numberOfLines={1}>
-                {item.title}
-              </Text>
-              <Text style={styles.fileSize}>{item.assetCount} fichier(s)</Text>
-            </View>
-            <View
-              style={[
-                styles.checkbox,
-                selected.has(item.id) && styles.checkboxAlbumOn,
-              ]}
-            >
-              {selected.has(item.id) && <Text style={styles.checkboxMark}>✓</Text>}
-            </View>
-          </Pressable>
+          <AlbumPickerRowMemo
+            item={item}
+            isSelected={selected.has(item.id)}
+            onToggle={toggle}
+          />
         )}
       />
 
@@ -1093,6 +1118,50 @@ function ScanScreen({
 // ============================================================================
 // Corbeille screen (corbeille INTERNE de l'app, avant suppression OS)
 // ============================================================================
+// Row memoise pour eviter re-render de toutes les rows a chaque toggle.
+function CorbeilleItemRow({
+  it,
+  isSelected,
+  onToggle,
+}: {
+  it: AssetItem;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <Pressable
+      style={[
+        styles.fileRow,
+        { backgroundColor: COLORS.card, marginBottom: 8 },
+        isSelected && styles.fileRowSelected,
+      ]}
+      onPress={() => onToggle(it.id)}
+    >
+      <Image
+        source={{ uri: it.uri }}
+        style={styles.thumb}
+        contentFit="cover"
+        cachePolicy="disk"
+        recyclingKey={it.id}
+        transition={120}
+      />
+      <View style={{ flex: 1, marginLeft: 10 }}>
+        <Text style={styles.fileName} numberOfLines={1}>
+          {it.filename}
+        </Text>
+        <Text style={styles.fileSize}>
+          {fmtSize(it.fileSize)}
+          {it.mediaType === 'video' && '   ·   video'}
+        </Text>
+      </View>
+      <View style={[styles.checkbox, isSelected && styles.checkboxOn]}>
+        {isSelected && <Text style={styles.checkboxMark}>✓</Text>}
+      </View>
+    </Pressable>
+  );
+}
+const CorbeilleItemRowMemo = React.memo(CorbeilleItemRow);
+
 function CorbeilleScreen({
   items,
   onRestore,
@@ -1105,6 +1174,12 @@ function CorbeilleScreen({
   onBack: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Ref pour stabilite du callback toggle (sinon re-render de toutes les rows
+  // a chaque tap, plus previews qui flashent / re-decode JPEG).
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const totalSize = useMemo(
     () => items.reduce((s, it) => s + it.fileSize, 0),
@@ -1119,12 +1194,13 @@ function CorbeilleScreen({
     [selectedItems]
   );
 
-  const toggle = (id: string) => {
-    const next = new Set(selected);
+  const toggle = useCallback((id: string) => {
+    const cur = selectedRef.current;
+    const next = new Set(cur);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelected(next);
-  };
+  }, []);
 
   const checkAll = () => setSelected(new Set(items.map((it) => it.id)));
   const checkNone = () => setSelected(new Set());
@@ -1226,47 +1302,21 @@ function CorbeilleScreen({
 
       <FlatList
         data={items}
+        extraData={selected}
         keyExtractor={(it) => it.id}
         contentContainerStyle={{ paddingBottom: 180 }}
         initialNumToRender={12}
         maxToRenderPerBatch={8}
         windowSize={7}
-        removeClippedSubviews
+        // Sur Android avec expo-image, removeClippedSubviews=true cause des
+        // previews qui restent blanches au scroll.
+        removeClippedSubviews={false}
         renderItem={({ item: it }) => (
-          <Pressable
-            style={[
-              styles.fileRow,
-              { backgroundColor: COLORS.card, marginBottom: 8 },
-              selected.has(it.id) && styles.fileRowSelected,
-            ]}
-            onPress={() => toggle(it.id)}
-          >
-            <Image
-              source={{ uri: it.uri }}
-              style={styles.thumb}
-              contentFit="cover"
-              cachePolicy="disk"
-              recyclingKey={it.id}
-              transition={120}
-            />
-            <View style={{ flex: 1, marginLeft: 10 }}>
-              <Text style={styles.fileName} numberOfLines={1}>
-                {it.filename}
-              </Text>
-              <Text style={styles.fileSize}>
-                {fmtSize(it.fileSize)}
-                {it.mediaType === 'video' && '   ·   video'}
-              </Text>
-            </View>
-            <View
-              style={[
-                styles.checkbox,
-                selected.has(it.id) && styles.checkboxOn,
-              ]}
-            >
-              {selected.has(it.id) && <Text style={styles.checkboxMark}>✓</Text>}
-            </View>
-          </Pressable>
+          <CorbeilleItemRowMemo
+            it={it}
+            isSelected={selected.has(it.id)}
+            onToggle={toggle}
+          />
         )}
       />
 
@@ -1417,14 +1467,23 @@ function ResultsScreen({
     return rows;
   }, [groups]);
 
+  // Ref vers selected pour que `toggle` ait une identite stable (sinon
+  // chaque setSelected -> nouveau callback -> ResultItemRowMemo re-render
+  // toutes les rows -> previews flash + scroll jump.
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
   const toggle = useCallback(
     (id: string) => {
-      const next = new Set(selected);
+      const cur = selectedRef.current;
+      const next = new Set(cur);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       setSelected(next);
     },
-    [selected, setSelected]
+    [setSelected]
   );
 
   const checkAllButFirst = () => {
@@ -1491,6 +1550,7 @@ function ResultsScreen({
 
       <FlatList
         data={flatRows}
+        extraData={selected}
         keyExtractor={(r) =>
           r.kind === 'header' ? `h-${r.group.hash}` : r.item.id
         }
@@ -1498,7 +1558,10 @@ function ResultsScreen({
         initialNumToRender={12}
         maxToRenderPerBatch={8}
         windowSize={7}
-        removeClippedSubviews
+        // removeClippedSubviews=false : sur Android avec expo-image, true
+        // cause des previews qui restent blanches quand une row sort puis
+        // re-rentre dans le viewport.
+        removeClippedSubviews={false}
         renderItem={({ item: row }) =>
           row.kind === 'header' ? (
             <View style={styles.groupHeaderRow}>

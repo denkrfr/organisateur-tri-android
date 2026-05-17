@@ -3,7 +3,7 @@
  * les intrus avant le deplacement.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   Modal,
   View,
@@ -11,9 +11,42 @@ import {
   StyleSheet,
   TouchableOpacity,
   FlatList,
+  BackHandler,
 } from 'react-native';
 import { Image } from 'expo-image';
 import type { Cluster, ClusterItem } from './clustering';
+
+// Row memoise pour eviter re-render des tiles non-affectees a chaque toggle.
+function ContentTile({
+  item,
+  isChecked,
+  onToggle,
+}: {
+  item: ClusterItem;
+  isChecked: boolean;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.tile, isChecked ? styles.tileChecked : styles.tileUnchecked]}
+      onPress={() => onToggle(item.id)}
+    >
+      <Image
+        source={{ uri: item.uri }}
+        style={styles.tileImg}
+        contentFit="cover"
+        cachePolicy="memory-disk"
+        recyclingKey={item.id}
+        transition={120}
+      />
+      {!isChecked && <View style={styles.tileOverlay} />}
+      <View style={styles.checkBox}>
+        <Text style={styles.checkMark}>{isChecked ? '✓' : ''}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+const ContentTileMemo = React.memo(ContentTile);
 
 interface Props {
   cluster: Cluster;
@@ -26,14 +59,24 @@ export default function ClusterContentsModal({ cluster, onClose, onApply }: Prop
     () => new Set(cluster.items.map((it) => it.id))
   );
 
-  const toggle = (id: string) => {
+  // Intercept Android hardware back button : fermer le modal au lieu de
+  // quitter l'app (Modal RN ne le fait pas par defaut sur tous les devices).
+  React.useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [onClose]);
+
+  const toggle = useCallback((id: string) => {
     setChecked((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
   const checkAll = () => setChecked(new Set(cluster.items.map((it) => it.id)));
   const uncheckAll = () => setChecked(new Set());
@@ -69,23 +112,20 @@ export default function ClusterContentsModal({ cluster, onClose, onApply }: Prop
 
         <FlatList
           data={cluster.items}
+          extraData={checked}
           keyExtractor={(it) => it.id}
           numColumns={3}
-          renderItem={({ item }) => {
-            const isChecked = checked.has(item.id);
-            return (
-              <TouchableOpacity
-                style={[styles.tile, isChecked ? styles.tileChecked : styles.tileUnchecked]}
-                onPress={() => toggle(item.id)}
-              >
-                <Image source={{ uri: item.uri }} style={styles.tileImg} contentFit="cover" />
-                {!isChecked && <View style={styles.tileOverlay} />}
-                <View style={styles.checkBox}>
-                  <Text style={styles.checkMark}>{isChecked ? '✓' : ''}</Text>
-                </View>
-              </TouchableOpacity>
-            );
-          }}
+          initialNumToRender={15}
+          maxToRenderPerBatch={9}
+          windowSize={7}
+          removeClippedSubviews={false}
+          renderItem={({ item }) => (
+            <ContentTileMemo
+              item={item}
+              isChecked={checked.has(item.id)}
+              onToggle={toggle}
+            />
+          )}
         />
 
         <View style={styles.footer}>

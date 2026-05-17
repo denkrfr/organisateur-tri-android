@@ -18,10 +18,15 @@ import {
   TouchableOpacity,
   TextInput,
   ScrollView,
+  Keyboard,
 } from 'react-native';
 import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
 import type { Cluster } from './clustering';
+
+// Cap dur sur les noms d'album : Android = 255 chars max, mais on cape
+// plus tot (100) pour eviter UI degueulasse + paste accidentel.
+const MAX_ALBUM_NAME = 100;
 
 interface Props {
   cluster: Cluster;
@@ -59,7 +64,7 @@ function normalize(s: string): string {
     .trim();
 }
 
-export default function ClusterCard({
+function ClusterCardImpl({
   cluster,
   index,
   albums,
@@ -122,6 +127,9 @@ export default function ClusterCard({
             source={{ uri: it.uri }}
             style={styles.thumb}
             contentFit="cover"
+            cachePolicy="memory-disk"
+            recyclingKey={it.id}
+            transition={120}
           />
         ))}
         {remaining > 0 && (
@@ -166,6 +174,9 @@ export default function ClusterCard({
         onBlur={() => setTimeout(() => setFocused(false), 150)}
         editable={!busy}
         autoCapitalize="words"
+        maxLength={MAX_ALBUM_NAME}
+        returnKeyType="done"
+        onSubmitEditing={() => Keyboard.dismiss()}
       />
 
       {showSuggestions && (
@@ -202,7 +213,10 @@ export default function ClusterCard({
             canAct && willAdd && styles.btnAddExisting,
             busy && styles.btnDisabled,
           ]}
-          onPress={() => onMove(targetName)}
+          onPress={() => {
+            Keyboard.dismiss();
+            onMove(targetName);
+          }}
           disabled={busy || !canAct}
         >
           <Text style={styles.btnText} numberOfLines={2}>
@@ -225,7 +239,10 @@ export default function ClusterCard({
             !!queuedName && styles.queueBtnActive,
             (busy || !canAct) && styles.queueBtnDisabled,
           ]}
-          onPress={() => onQueue(targetName)}
+          onPress={() => {
+            Keyboard.dismiss();
+            onQueue(targetName);
+          }}
           disabled={busy || !canAct}
         >
           <Text style={styles.queueBtnText} numberOfLines={2}>
@@ -362,6 +379,7 @@ const styles = StyleSheet.create({
   suggBannerText: { color: '#e4e6f0', fontSize: 13 },
   suggBannerName: { color: '#a29bfe', fontWeight: '700' },
   suggBannerHint: { color: '#8b8fa3', fontSize: 11, fontStyle: 'italic' },
+  // styles batch button
   queueBtn: {
     marginTop: 6,
     backgroundColor: '#252836',
@@ -379,3 +397,9 @@ const styles = StyleSheet.create({
   queueBtnDisabled: { opacity: 0.4 },
   queueBtnText: { color: '#e4e6f0', fontSize: 12, fontWeight: '600' },
 });
+
+// React.memo : un parent qui re-render (changement de queueBar, scroll, etc.)
+// ne doit pas re-render TOUTES les ClusterCard. Le memo compare les props
+// shallow ; les callbacks doivent etre stables cote parent (cf TriScreen).
+const ClusterCard = React.memo(ClusterCardImpl);
+export default ClusterCard;

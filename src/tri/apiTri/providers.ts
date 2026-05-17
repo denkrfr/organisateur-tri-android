@@ -18,7 +18,6 @@
  */
 
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system';
 import type { ProviderId } from './keyStore';
 
 export const BATCH_SIZE = 20;
@@ -104,7 +103,36 @@ const GEMINI_MODEL = 'gemini-2.5-flash';
 // (proxies d'entreprise avec inspection TLS, outils de monitoring, etc.)
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-async function callGemini(apiKey: string, imagesB64: string[]): Promise<LlmResponse> {
+// Wrapper fetch avec timeout et propagation d'un signal externe (pour
+// cancellation cote UI). Timeout par defaut 90s : un batch de 20 images
+// peut prendre 30-60s legitimement, surtout sur reseau faible. AbortError
+// se distingue par error.name === 'AbortError'.
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeoutMs?: number; externalSignal?: AbortSignal }
+): Promise<Response> {
+  const { timeoutMs = 90000, externalSignal, ...init } = options;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // Si le signal externe est aborte, propager au notre.
+  const onExternalAbort = () => ctrl.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) ctrl.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort);
+  }
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+async function callGemini(
+  apiKey: string,
+  imagesB64: string[],
+  signal?: AbortSignal
+): Promise<LlmResponse> {
   const parts: any[] = [{ text: PROMPT_FR }];
   for (const b64 of imagesB64) {
     parts.push({
@@ -118,13 +146,14 @@ async function callGemini(apiKey: string, imagesB64: string[]): Promise<LlmRespo
       temperature: 0.2,
     },
   };
-  const res = await fetch(GEMINI_URL, {
+  const res = await fetchWithTimeout(GEMINI_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-goog-api-key': apiKey,
     },
     body: JSON.stringify(body),
+    externalSignal: signal,
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
@@ -146,7 +175,11 @@ async function callGemini(apiKey: string, imagesB64: string[]): Promise<LlmRespo
 const OPENAI_MODEL = 'gpt-5-nano';
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
-async function callOpenAI(apiKey: string, imagesB64: string[]): Promise<LlmResponse> {
+async function callOpenAI(
+  apiKey: string,
+  imagesB64: string[],
+  signal?: AbortSignal
+): Promise<LlmResponse> {
   // Format Chat Completions vision : content = array de parts mixtes.
   // detail:'low' divise par ~10 les tokens vision sans degrader la
   // classification de groupes (pas besoin d'OCR fin pour clusteriser).
@@ -171,13 +204,14 @@ async function callOpenAI(apiKey: string, imagesB64: string[]): Promise<LlmRespo
     max_completion_tokens: 2048,
   };
 
-  const res = await fetch(OPENAI_URL, {
+  const res = await fetchWithTimeout(OPENAI_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    externalSignal: signal,
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
@@ -204,26 +238,36 @@ function normalizeName(s: string): string {
 
 /**
  * Analyse N items via l'API selectionnee. Renvoie des clusters fusionnes.
+ *
+ * Le signal optionnel permet d'annuler l'analyse (cancellation via UI) :
+ * on check entre chaque batch, et on le passe a fetchWithTimeout pour
+ * couper la requete en cours.
  */
 export async function analyzeWithApi(
   provider: ProviderId,
   apiKey: string,
   items: ApiClusterItem[],
-  onProgress: ProviderProgress
+  onProgress: ProviderProgress,
+  signal?: AbortSignal
 ): Promise<ApiCluster[]> {
   const totalBatches = Math.ceil(items.length / BATCH_SIZE);
-  // Map "nom normalise" -> ApiCluster (pour fusion entre batches)
   const merged = new Map<string, ApiCluster>();
 
   for (let b = 0; b < totalBatches; b++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
     const start = b * BATCH_SIZE;
     const batch = items.slice(start, start + BATCH_SIZE);
 
     onProgress(b, totalBatches, `Preparation lot ${b + 1}/${totalBatches}...`);
-    // Prepare les images en parallele (8 a la fois pour ne pas exploser la RAM)
+    // Prepare les images en parallele. PARA=3 sur Android : chaque
+    // manipulateAsync decode l'image originale en bitmap natif (potentiellement
+    // 50MB JPEG) puis re-encode -> 8 simultanes = jusqu'a 400MB de bitmaps
+    // vivants en RAM = OOM sur appareils 4GB.
     const b64s: (string | null)[] = new Array(batch.length).fill(null);
-    const PARA = 8;
+    const PARA = 3;
     for (let i = 0; i < batch.length; i += PARA) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const slice = batch.slice(i, i + PARA);
       const results = await Promise.all(slice.map((it) => prepImage(it.uri)));
       for (let j = 0; j < results.length; j++) b64s[i + j] = results[j];
@@ -247,8 +291,8 @@ export async function analyzeWithApi(
       // meme endpoint). La distinction est uniquement declarative cote user :
       // 'gemini-paid' indique que son projet GCP a le billing active.
       llm = provider === 'openai'
-        ? await callOpenAI(apiKey, validB64)
-        : await callGemini(apiKey, validB64);
+        ? await callOpenAI(apiKey, validB64, signal)
+        : await callGemini(apiKey, validB64, signal);
     } catch (e: any) {
       // On laisse remonter l'erreur pour que l'UI puisse la gerer (cle invalide, quota, etc.)
       throw e;

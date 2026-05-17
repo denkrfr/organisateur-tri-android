@@ -10,7 +10,7 @@
  *   5. Action "Creer album / Ajouter a existant" identique au mode CLIP
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native';
 import * as MediaLibrary from 'expo-media-library';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -35,6 +36,17 @@ import SetupScreen from './SetupScreen';
 
 interface Props {
   onBack: () => void;
+}
+
+// Cf TriScreen pour la rationale. On duplique localement pour pas creer un
+// fichier util/ separe pour 6 lignes.
+function sanitizeAlbumName(name: string): string {
+  const cleaned = name
+    .replace(/[\/\\:*?"<>|\x00-\x1f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+  return cleaned.length > 0 ? cleaned : 'Sans nom';
 }
 
 type Phase = 'init' | 'setup' | 'ready' | 'analyzing' | 'results';
@@ -59,6 +71,19 @@ export default function TriApiScreen({ onBack }: Props) {
   // L'user prepare plusieurs clusters puis on flush en un coup
   // (1 popup d'autorisation Android au lieu de N).
   const [queued, setQueued] = useState<Map<string, string>>(new Map());
+  // Cancellation : pour interrompre une analyse longue (1000 photos =
+  // potentiellement 20-50 min sans cancel). AbortController coupe les
+  // fetch en cours cote providers.ts.
+  const analysisCancelRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      analysisCancelRef.current = true;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // 1. Verif setup au mount
   useEffect(() => {
@@ -121,6 +146,12 @@ export default function TriApiScreen({ onBack }: Props) {
     }
   }, []);
 
+  const cancelAnalysis = useCallback(() => {
+    analysisCancelRef.current = true;
+    abortRef.current?.abort();
+    if (mountedRef.current) setPhase('ready');
+  }, []);
+
   const startAnalysis = useCallback(async () => {
     if (!provider) return;
     if (pickedAssets.length === 0) {
@@ -134,12 +165,16 @@ export default function TriApiScreen({ onBack }: Props) {
       return;
     }
 
+    analysisCancelRef.current = false;
+    abortRef.current = new AbortController();
     setPhase('analyzing');
     setProgress({ batch: 0, total: 0, label: 'Resolution des URIs locales...' });
 
-    // Resolution des localUri (necessaire pour ImageManipulator)
+    // Resolution des localUri (necessaire pour ImageManipulator).
+    // Boucle interruptible : check le cancelRef apres chaque await.
     const items: ApiClusterItem[] = [];
     for (const a of pickedAssets) {
+      if (analysisCancelRef.current || !mountedRef.current) return;
       let uri = a.uri;
       try {
         const info = await MediaLibrary.getAssetInfoAsync({ id: a.id } as any, {
@@ -152,16 +187,28 @@ export default function TriApiScreen({ onBack }: Props) {
       items.push({ id: a.id, uri, filename: a.filename });
     }
 
+    if (analysisCancelRef.current || !mountedRef.current) return;
+
     try {
       const apiClusters = await analyzeWithApi(
         provider,
         apiKey,
         items,
-        (batch, total, label) => setProgress({ batch, total, label })
+        (batch, total, label) => {
+          if (!mountedRef.current) return;
+          setProgress({ batch, total, label });
+        },
+        abortRef.current.signal
       );
+      if (analysisCancelRef.current || !mountedRef.current) return;
       setClusters(apiClusters);
       setPhase('results');
     } catch (e: any) {
+      if (!mountedRef.current) return;
+      // Si l'user a explicitement annule, on ne montre pas d'Alert (deja sur ready)
+      if (analysisCancelRef.current || e?.name === 'AbortError') {
+        return;
+      }
       Alert.alert(
         'Echec analyse IA',
         (e?.message ?? String(e)) +
@@ -170,6 +217,23 @@ export default function TriApiScreen({ onBack }: Props) {
       setPhase('ready');
     }
   }, [provider, pickedAssets]);
+
+  // Intercept hardware back pendant l'analyse pour confirmer l'annulation
+  useEffect(() => {
+    if (phase !== 'analyzing') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      Alert.alert(
+        "Annuler l'analyse IA ?",
+        "L'avancement sera perdu (tu peux relancer ensuite).",
+        [
+          { text: 'Continuer', style: 'cancel' },
+          { text: 'Annuler', style: 'destructive', onPress: cancelAnalysis },
+        ]
+      );
+      return true;
+    });
+    return () => sub.remove();
+  }, [phase, cancelAnalysis]);
 
   // Convertit ApiCluster -> Cluster (format attendu par ClusterCard).
   // ClusterCard ignore le champ 'embedding' donc on peut le mettre vide.
@@ -184,28 +248,29 @@ export default function TriApiScreen({ onBack }: Props) {
 
   const moveClusterToAlbum = useCallback(
     async (cluster: ApiCluster, albumName: string) => {
-      if (!albumName.trim()) {
-        Alert.alert('Nom requis', "Tape un nom d'album avant de creer.");
+      const clean = sanitizeAlbumName(albumName);
+      if (!albumName.trim() || clean === 'Sans nom') {
+        Alert.alert('Nom requis', "Tape un nom d'album valide avant de creer.");
         return;
       }
       setBusy(true);
       try {
         const assetIds = cluster.items.map((it) => it.id);
         const fakeAssets = assetIds.map((id) => ({ id } as MediaLibrary.Asset));
-        const existing = await MediaLibrary.getAlbumAsync(albumName);
+        const existing = await MediaLibrary.getAlbumAsync(clean);
         let album: MediaLibrary.Album;
         if (existing) {
           album = existing;
           await MediaLibrary.addAssetsToAlbumAsync(fakeAssets as any, album, false);
         } else {
-          album = await MediaLibrary.createAlbumAsync(albumName, fakeAssets[0] as any, false);
+          album = await MediaLibrary.createAlbumAsync(clean, fakeAssets[0] as any, false);
           if (fakeAssets.length > 1) {
             await MediaLibrary.addAssetsToAlbumAsync(fakeAssets.slice(1) as any, album, false);
           }
         }
         Alert.alert(
           'Album cree',
-          `${cluster.items.length} fichier(s) ajoute(s) a "${albumName}".`
+          `${cluster.items.length} fichier(s) ajoute(s) a "${clean}".`
         );
         setClusters((prev) => prev.filter((c) => c !== cluster));
       } catch (e: any) {
@@ -220,13 +285,30 @@ export default function TriApiScreen({ onBack }: Props) {
   // Ajoute / met a jour un cluster dans la file d'attente
   const queueCluster = useCallback((cluster: ApiCluster, albumName: string) => {
     const key = cluster.items[0]?.id;
-    if (!key || !albumName.trim()) return;
+    const clean = sanitizeAlbumName(albumName);
+    if (!key || !albumName.trim() || clean === 'Sans nom') return;
     setQueued((prev) => {
       const next = new Map(prev);
-      next.set(key, albumName.trim());
+      next.set(key, clean);
       return next;
     });
   }, []);
+
+  const clearQueueWithConfirm = useCallback(() => {
+    if (queued.size === 0) return;
+    Alert.alert(
+      'Vider la file ?',
+      `Tu vas perdre les ${queued.size} groupe(s) prepares.`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Vider',
+          style: 'destructive',
+          onPress: () => setQueued(new Map()),
+        },
+      ]
+    );
+  }, [queued]);
 
   // Flush : groupe les clusters en file PAR ALBUM CIBLE (normalise casse +
   // accents) -> 1-2 appels MediaLibrary par album unique. Reduit le nombre
@@ -245,11 +327,12 @@ export default function TriApiScreen({ onBack }: Props) {
     for (const [firstId, albumName] of queued) {
       const cluster = clusters.find((c) => c.items[0]?.id === firstId);
       if (!cluster) continue;
-      const key = normalize(albumName);
+      const cleanName = sanitizeAlbumName(albumName);
+      const key = normalize(cleanName);
       const entry = byAlbum.get(key) ?? {
         items: [],
         firstIds: [],
-        displayName: albumName,
+        displayName: cleanName,
       };
       entry.items.push(...cluster.items);
       entry.firstIds.push(firstId);
@@ -376,7 +459,22 @@ export default function TriApiScreen({ onBack }: Props) {
             </View>
           </>
         )}
-        <Text style={styles.muted}>L'IA analyse tes photos en lignes...</Text>
+        <Text style={styles.muted}>L'IA analyse tes photos en ligne...</Text>
+        <TouchableOpacity
+          style={styles.secondaryCancelBtn}
+          onPress={() => {
+            Alert.alert(
+              "Annuler l'analyse IA ?",
+              "L'avancement sera perdu. Tu pourras relancer.",
+              [
+                { text: 'Continuer', style: 'cancel' },
+                { text: 'Annuler', style: 'destructive', onPress: cancelAnalysis },
+              ]
+            );
+          }}
+        >
+          <Text style={styles.secondaryCancelText}>Annuler l'analyse</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -385,8 +483,8 @@ export default function TriApiScreen({ onBack }: Props) {
     return (
       <ScrollView style={styles.screen} keyboardShouldPersistTaps="handled">
         <View style={styles.headerRow}>
-          <TouchableOpacity onPress={onBack}>
-            <Text style={styles.link}>← Retour</Text>
+          <TouchableOpacity onPress={onBack} disabled={busy}>
+            <Text style={[styles.link, busy && { opacity: 0.4 }]}>← Retour</Text>
           </TouchableOpacity>
           <Text style={styles.titleSmall}>
             {clusters.length} groupe(s) trouve(s) (IA)
@@ -400,7 +498,7 @@ export default function TriApiScreen({ onBack }: Props) {
             <View style={styles.queueBarActions}>
               <TouchableOpacity
                 style={styles.queueClearBtn}
-                onPress={() => setQueued(new Map())}
+                onPress={clearQueueWithConfirm}
                 disabled={busy}
               >
                 <Text style={styles.queueClearText}>Vider</Text>
@@ -464,8 +562,8 @@ export default function TriApiScreen({ onBack }: Props) {
   return (
     <ScrollView style={styles.screen}>
       <View style={styles.headerRow}>
-        <TouchableOpacity onPress={onBack}>
-          <Text style={styles.link}>← Retour</Text>
+        <TouchableOpacity onPress={onBack} disabled={busy}>
+          <Text style={[styles.link, busy && { opacity: 0.4 }]}>← Retour</Text>
         </TouchableOpacity>
         <Text style={styles.titleSmall}>
           Tri IA ({
@@ -487,7 +585,11 @@ export default function TriApiScreen({ onBack }: Props) {
         return (
           <TouchableOpacity
             key={al.id}
-            style={[styles.albumRow, selected && styles.albumRowSelected]}
+            style={[
+              styles.albumRow,
+              selected && styles.albumRowSelected,
+              busy && { opacity: 0.5 },
+            ]}
             onPress={() => pickAlbum(al)}
             disabled={busy}
           >
@@ -496,6 +598,12 @@ export default function TriApiScreen({ onBack }: Props) {
           </TouchableOpacity>
         );
       })}
+      {busy && (
+        <View style={styles.busyOverlay}>
+          <ActivityIndicator size="large" color="#6c5ce7" />
+          <Text style={styles.muted}>Chargement des photos...</Text>
+        </View>
+      )}
       {pickedAssets.length > 0 && (
         <View style={styles.summaryBox}>
           <Text style={styles.body}>
@@ -636,6 +744,21 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   progressFill: { height: '100%', backgroundColor: '#6c5ce7' },
+  secondaryCancelBtn: {
+    marginTop: 24,
+    backgroundColor: '#252836',
+    borderColor: '#3a3f55',
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+    borderRadius: 8,
+  },
+  secondaryCancelText: { color: '#e4e6f0', fontSize: 13, fontWeight: '600' },
+  busyOverlay: {
+    marginTop: 18,
+    padding: 16,
+    alignItems: 'center',
+  },
   queueBar: {
     backgroundColor: 'rgba(0, 184, 148, 0.10)',
     borderColor: '#00b894',

@@ -19,8 +19,22 @@ import {
   Linking,
   ActivityIndicator,
   Alert,
+  Keyboard,
 } from 'react-native';
 import { saveApiKey, saveSelectedProvider, type ProviderId } from './keyStore';
+
+// Validation soft du format de cle. Permet d'attraper les erreurs evidentes
+// (espace, BOM, coupe a moitie) avant de sauver et de lancer une analyse 2 min
+// qui pourrait echouer avec une 401 cryptique.
+// On reste laxiste : si la cle ne match pas, on AVERTIT mais on laisse l'user
+// continuer s'il insiste (Google/OpenAI peuvent changer leurs formats).
+function looksLikeGeminiKey(k: string): boolean {
+  return /^AIza[\w-]{30,}$/.test(k);
+}
+function looksLikeOpenAIKey(k: string): boolean {
+  // Couvre sk-, sk-proj-, sk-svcacct- etc.
+  return /^sk-[\w-]{20,}$/.test(k);
+}
 
 interface Props {
   onDone: (provider: ProviderId) => void;
@@ -42,20 +56,45 @@ export default function SetupScreen({ onDone, onBack }: Props) {
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
-    if (!apiKey.trim()) {
+    Keyboard.dismiss();
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
       Alert.alert('Cle vide', 'Colle ta cle API avant de continuer.');
       return;
     }
-    setSaving(true);
-    try {
-      await saveApiKey(provider, apiKey.trim());
-      await saveSelectedProvider(provider);
-      onDone(provider);
-    } catch (e: any) {
-      Alert.alert('Erreur stockage', e?.message ?? String(e));
-    } finally {
-      setSaving(false);
+
+    // Validation soft : avertit mais ne bloque pas si l'user insiste.
+    const isGemini = provider === 'gemini' || provider === 'gemini-paid';
+    const validFormat = isGemini
+      ? looksLikeGeminiKey(trimmed)
+      : looksLikeOpenAIKey(trimmed);
+
+    const persist = async () => {
+      setSaving(true);
+      try {
+        await saveApiKey(provider, trimmed);
+        await saveSelectedProvider(provider);
+        onDone(provider);
+      } catch (e: any) {
+        Alert.alert('Erreur stockage', e?.message ?? String(e));
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    if (!validFormat) {
+      const expected = isGemini ? 'AIza...' : 'sk-...';
+      Alert.alert(
+        'Format de cle inhabituel',
+        `La cle ne commence pas par "${expected}" ou est trop courte. Tu l'as peut-etre mal copiee (espace, BOM Unicode, coupure).\n\nContinuer quand meme ?`,
+        [
+          { text: 'Verifier', style: 'cancel' },
+          { text: 'Continuer', onPress: persist },
+        ]
+      );
+      return;
     }
+    await persist();
   };
 
   if (step === 'disclosure') {
