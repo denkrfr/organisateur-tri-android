@@ -1,7 +1,7 @@
 /**
  * Setup initial du mode IA cloud :
  *   1. Disclosure privacy (les photos vont sortir du tel)
- *   2. Choisir provider (Gemini gratuit OU Claude payant)
+ *   2. Choisir provider (Gemini gratuit OU OpenAI GPT-5 nano payant)
  *   3. Coller la cle API
  *   4. Stocker chiffre dans Android Keystore via expo-secure-store
  *
@@ -30,9 +30,9 @@ interface Props {
 type Step = 'disclosure' | 'provider' | 'key';
 
 const GEMINI_KEY_URL = 'https://aistudio.google.com/apikey';
-const CLAUDE_KEY_URL = 'https://console.anthropic.com/settings/keys';
+const OPENAI_KEY_URL = 'https://platform.openai.com/api-keys';
 const GEMINI_PRIVACY = 'https://ai.google.dev/gemini-api/terms';
-const CLAUDE_PRIVACY = 'https://www.anthropic.com/legal/privacy';
+const OPENAI_PRIVACY = 'https://openai.com/policies/api-data-usage-policies';
 
 export default function SetupScreen({ onDone, onBack }: Props) {
   const [step, setStep] = useState<Step>('disclosure');
@@ -62,14 +62,14 @@ export default function SetupScreen({ onDone, onBack }: Props) {
       <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
         <Text style={styles.title}>Mode IA cloud</Text>
         <Text style={styles.body}>
-          Cette option utilise un service d'IA en ligne (Google Gemini ou Anthropic Claude)
+          Cette option utilise un service d'IA en ligne (Google Gemini ou OpenAI GPT-5 nano)
           pour trier tes photos par theme. Le tri est plus rapide et plus precis qu'avec
           le mode local, et l'IA propose elle-meme des noms d'albums.
         </Text>
         <View style={styles.warning}>
           <Text style={styles.warningTitle}>⚠️ Important sur la confidentialite</Text>
           <Text style={styles.warningBody}>
-            En utilisant ce mode, tes photos seront envoyees a Google ou Anthropic
+            En utilisant ce mode, tes photos seront envoyees a Google ou OpenAI
             pour analyse. Elles ne sont pas stockees durablement par ces services
             (selon leurs politiques) mais elles quittent ton telephone.
           </Text>
@@ -110,17 +110,19 @@ export default function SetupScreen({ onDone, onBack }: Props) {
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.providerCard, provider === 'claude' && styles.providerCardSelected]}
-          onPress={() => setProvider('claude')}
+          style={[styles.providerCard, provider === 'openai' && styles.providerCardSelected]}
+          onPress={() => setProvider('openai')}
         >
-          <Text style={styles.providerTitle}>Anthropic Claude Haiku</Text>
-          <Text style={styles.providerTagPaid}>PAYANT ~0,60$ / 200 photos</Text>
+          <Text style={styles.providerTitle}>OpenAI GPT-5 nano</Text>
+          <Text style={styles.providerTagPaid}>PAYANT ~0,05$ / 1000 photos</Text>
           <Text style={styles.providerDesc}>
-            Pas de quota gratuit. Compte Anthropic avec credits (a recharger une fois).
-            Qualite de regroupement excellente, descriptions tres precises.
+            Pas de quota gratuit. Compte OpenAI avec credits (5$ minimum a recharger
+            une fois). Le modele le moins cher d'OpenAI avec vision : ~50x moins cher
+            que Claude pour la meme qualite de regroupement. A choisir quand tu depasses
+            le quota Gemini gratuit (1500 req/jour).
           </Text>
-          <TouchableOpacity onPress={() => Linking.openURL(CLAUDE_PRIVACY)}>
-            <Text style={styles.linkText}>Confidentialite Claude ↗</Text>
+          <TouchableOpacity onPress={() => Linking.openURL(OPENAI_PRIVACY)}>
+            <Text style={styles.linkText}>Confidentialite OpenAI ↗</Text>
           </TouchableOpacity>
         </TouchableOpacity>
 
@@ -129,7 +131,7 @@ export default function SetupScreen({ onDone, onBack }: Props) {
             <Text style={styles.secondaryBtnText}>Retour</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.primaryBtn} onPress={() => setStep('key')}>
-            <Text style={styles.primaryBtnText}>Choisir {provider === 'gemini' ? 'Gemini' : 'Claude'}</Text>
+            <Text style={styles.primaryBtnText}>Choisir {provider === 'gemini' ? 'Gemini' : 'GPT-5 nano'}</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -137,13 +139,13 @@ export default function SetupScreen({ onDone, onBack }: Props) {
   }
 
   // step === 'key'
-  const keyUrl = provider === 'gemini' ? GEMINI_KEY_URL : CLAUDE_KEY_URL;
+  const keyUrl = provider === 'gemini' ? GEMINI_KEY_URL : OPENAI_KEY_URL;
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
-      <Text style={styles.title}>Cle API {provider === 'gemini' ? 'Gemini' : 'Claude'}</Text>
+      <Text style={styles.title}>Cle API {provider === 'gemini' ? 'Gemini' : 'OpenAI'}</Text>
       <Text style={styles.body}>
-        1. Va sur la page de creation de cle de {provider === 'gemini' ? 'Google AI Studio' : 'Anthropic Console'}.
-        {'\n'}2. Cree une cle (gratuit pour Gemini, compte Anthropic pour Claude).
+        1. Va sur la page de creation de cle de {provider === 'gemini' ? 'Google AI Studio' : 'OpenAI Platform'}.
+        {'\n'}2. Cree une cle (gratuit pour Gemini, compte OpenAI avec credits pour GPT-5 nano).
         {'\n'}3. Copie-la et colle-la ci-dessous.
       </Text>
       <TouchableOpacity onPress={() => Linking.openURL(keyUrl)}>
@@ -154,7 +156,7 @@ export default function SetupScreen({ onDone, onBack }: Props) {
         style={styles.keyInput}
         value={apiKey}
         onChangeText={setApiKey}
-        placeholder={provider === 'gemini' ? 'AIza...' : 'sk-ant-...'}
+        placeholder={provider === 'gemini' ? 'AIza...' : 'sk-...'}
         placeholderTextColor="#5a5e70"
         secureTextEntry
         autoCapitalize="none"

@@ -1,5 +1,5 @@
 /**
- * Adapters Gemini & Claude pour le tri par IA.
+ * Adapters Gemini & OpenAI GPT-5 nano pour le tri par IA.
  *
  * Contrat : recoit un lot d'images (uri locale), renvoie des clusters
  * thematiques avec un nom suggere par l'IA.
@@ -138,45 +138,57 @@ async function callGemini(apiKey: string, imagesB64: string[]): Promise<LlmRespo
 }
 
 // ============================================================================
-// Claude (Anthropic)
+// OpenAI (GPT-5 nano) via Chat Completions
 // ============================================================================
-const CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
-const CLAUDE_URL = 'https://api.anthropic.com/v1/messages';
+// gpt-5-nano : modele le moins cher d'OpenAI avec vision native (~$0.20/M
+// input, $1.25/M output). Pour notre use case (classification + JSON court)
+// avec detail:'low' on tombe a ~$0.05 / 1000 photos. Bien moins cher que
+// Claude Haiku (~$1.50 / 1000 photos) sans perdre en qualite vision.
+const OPENAI_MODEL = 'gpt-5-nano';
+const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
-async function callClaude(apiKey: string, imagesB64: string[]): Promise<LlmResponse> {
-  const content: any[] = [];
+async function callOpenAI(apiKey: string, imagesB64: string[]): Promise<LlmResponse> {
+  // Format Chat Completions vision : content = array de parts mixtes.
+  // detail:'low' divise par ~10 les tokens vision sans degrader la
+  // classification de groupes (pas besoin d'OCR fin pour clusteriser).
+  const content: any[] = [{ type: 'text', text: PROMPT_FR }];
   for (const b64 of imagesB64) {
     content.push({
-      type: 'image',
-      source: { type: 'base64', media_type: 'image/jpeg', data: b64 },
+      type: 'image_url',
+      image_url: {
+        url: `data:image/jpeg;base64,${b64}`,
+        detail: 'low',
+      },
     });
   }
-  content.push({ type: 'text', text: PROMPT_FR });
 
   const body = {
-    model: CLAUDE_MODEL,
-    max_tokens: 2048,
+    model: OPENAI_MODEL,
     messages: [{ role: 'user', content }],
+    // Mode JSON : oblige la reponse a etre du JSON parseable. Necessite que
+    // le prompt contienne le mot "JSON" — c'est le cas dans PROMPT_FR.
+    response_format: { type: 'json_object' },
+    // GPT-5 series utilise max_completion_tokens (et non max_tokens).
+    max_completion_tokens: 2048,
   };
-  const res = await fetch(CLAUDE_URL, {
+
+  const res = await fetch(OPENAI_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`Claude ${res.status} : ${txt.slice(0, 200)}`);
+    throw new Error(`OpenAI ${res.status} : ${txt.slice(0, 200)}`);
   }
   const data = await res.json();
-  // Claude renvoie content: [{type: "text", text: "..."}]
-  const text: string = data?.content?.[0]?.text ?? '';
+  // Chat Completions : choices[0].message.content (string)
+  const text: string = data?.choices?.[0]?.message?.content ?? '';
   const parsed = extractJson(text);
-  if (!parsed) throw new Error('Claude : reponse JSON invalide');
+  if (!parsed) throw new Error('OpenAI : reponse JSON invalide');
   return parsed;
 }
 
@@ -234,7 +246,7 @@ export async function analyzeWithApi(
     try {
       llm = provider === 'gemini'
         ? await callGemini(apiKey, validB64)
-        : await callClaude(apiKey, validB64);
+        : await callOpenAI(apiKey, validB64);
     } catch (e: any) {
       // On laisse remonter l'erreur pour que l'UI puisse la gerer (cle invalide, quota, etc.)
       throw e;

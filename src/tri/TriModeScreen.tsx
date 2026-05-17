@@ -1,7 +1,7 @@
 /**
  * Ecran de choix du mode de tri :
  *   - Local (CLIP) : 100% offline, lent, regroupe par ressemblance visuelle
- *   - IA cloud    : photos envoyees a Google ou Anthropic, rapide, regroupe
+ *   - IA cloud    : photos envoyees a Google ou OpenAI, rapide, regroupe
  *                    par theme et propose des noms d'albums
  *
  * Tap sur "Reset cle API" supprime la config IA cloud (utile pour changer
@@ -96,7 +96,7 @@ export default function TriModeScreen({ onChooseLocal, onChooseApi, onBack }: Pr
           </View>
         </View>
         <Text style={styles.modeDesc}>
-          Tes photos sont envoyees a Google Gemini ou Anthropic Claude pour analyse.
+          Tes photos sont envoyees a Google Gemini ou OpenAI GPT-5 nano pour analyse.
           {'\n\n'}
           Regroupe par theme (plage, repas, captures de cours, animaux, etc.) et te
           propose un nom d'album pour chaque groupe. Beaucoup plus rapide et precis,
@@ -104,7 +104,7 @@ export default function TriModeScreen({ onChooseLocal, onChooseApi, onBack }: Pr
         </Text>
         {configuredProvider && (
           <Text style={styles.providerNote}>
-            ✓ Configure : {configuredProvider === 'gemini' ? 'Google Gemini' : 'Anthropic Claude'}
+            ✓ Configure : {configuredProvider === 'gemini' ? 'Google Gemini' : 'OpenAI GPT-5 nano'}
           </Text>
         )}
       </TouchableOpacity>

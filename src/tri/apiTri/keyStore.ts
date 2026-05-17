@@ -7,7 +7,7 @@
 
 import * as SecureStore from 'expo-secure-store';
 
-export type ProviderId = 'gemini' | 'claude';
+export type ProviderId = 'gemini' | 'openai';
 
 const KEY_PREFIX = 'tri_api_';
 const PROVIDER_KEY = 'tri_provider';
@@ -39,7 +39,8 @@ export async function saveSelectedProvider(provider: ProviderId): Promise<void> 
 export async function loadSelectedProvider(): Promise<ProviderId | null> {
   try {
     const v = await SecureStore.getItemAsync(PROVIDER_KEY);
-    if (v === 'gemini' || v === 'claude') return v;
+    if (v === 'gemini' || v === 'openai') return v;
+    // Anciennes installs avec 'claude' : on ignore, l'user refera le setup.
     return null;
   } catch {
     return null;

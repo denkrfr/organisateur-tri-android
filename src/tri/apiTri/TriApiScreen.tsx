@@ -429,7 +429,7 @@ export default function TriApiScreen({ onBack }: Props) {
           <Text style={styles.link}>← Retour</Text>
         </TouchableOpacity>
         <Text style={styles.titleSmall}>
-          Tri IA ({provider === 'gemini' ? 'Gemini' : 'Claude'})
+          Tri IA ({provider === 'gemini' ? 'Gemini' : 'GPT-5 nano'})
         </Text>
       </View>
       <Text style={styles.body}>
@@ -457,7 +457,7 @@ export default function TriApiScreen({ onBack }: Props) {
             {pickedAssets.length} photo(s) selectionnee(s)
           </Text>
           <Text style={styles.muted}>
-            Sera envoye a {provider === 'gemini' ? 'Google Gemini' : 'Anthropic Claude'}
+            Sera envoye a {provider === 'gemini' ? 'Google Gemini' : 'OpenAI GPT-5 nano'}
             {' '}par lots de 20.
           </Text>
           <TouchableOpacity
