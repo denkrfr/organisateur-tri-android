@@ -55,6 +55,10 @@ export default function TriApiScreen({ onBack }: Props) {
   const [progress, setProgress] = useState({ batch: 0, total: 0, label: '' });
   const [clusters, setClusters] = useState<ApiCluster[]>([]);
   const [openClusterIdx, setOpenClusterIdx] = useState<number | null>(null);
+  // Mode batch : Map firstItemId -> albumName cible.
+  // L'user prepare plusieurs clusters puis on flush en un coup
+  // (1 popup d'autorisation Android au lieu de N).
+  const [queued, setQueued] = useState<Map<string, string>>(new Map());
 
   // 1. Verif setup au mount
   useEffect(() => {
@@ -202,6 +206,65 @@ export default function TriApiScreen({ onBack }: Props) {
     []
   );
 
+  // Ajoute / met a jour un cluster dans la file d'attente
+  const queueCluster = useCallback((cluster: ApiCluster, albumName: string) => {
+    const key = cluster.items[0]?.id;
+    if (!key || !albumName.trim()) return;
+    setQueued((prev) => {
+      const next = new Map(prev);
+      next.set(key, albumName.trim());
+      return next;
+    });
+  }, []);
+
+  // Flush : execute en serie tous les deplacements en file, retire les
+  // clusters reussis de l'affichage. 1 seul Alert final pour le bilan.
+  const flushAll = useCallback(async () => {
+    if (queued.size === 0) return;
+    setBusy(true);
+    const succeeded: string[] = []; // firstItemIds
+    const errors: { name: string; msg: string }[] = [];
+    for (const [firstId, albumName] of queued) {
+      const cluster = clusters.find((c) => c.items[0]?.id === firstId);
+      if (!cluster) continue;
+      try {
+        const assetIds = cluster.items.map((it) => it.id);
+        const fakeAssets = assetIds.map((id) => ({ id } as MediaLibrary.Asset));
+        const existing = await MediaLibrary.getAlbumAsync(albumName);
+        let album: MediaLibrary.Album;
+        if (existing) {
+          album = existing;
+          await MediaLibrary.addAssetsToAlbumAsync(fakeAssets as any, album, false);
+        } else {
+          album = await MediaLibrary.createAlbumAsync(albumName, fakeAssets[0] as any, false);
+          if (fakeAssets.length > 1) {
+            await MediaLibrary.addAssetsToAlbumAsync(fakeAssets.slice(1) as any, album, false);
+          }
+        }
+        succeeded.push(firstId);
+      } catch (e: any) {
+        errors.push({ name: albumName, msg: e?.message ?? String(e) });
+      }
+    }
+    const okSet = new Set(succeeded);
+    setClusters((prev) => prev.filter((c) => !okSet.has(c.items[0]?.id ?? '')));
+    setQueued((prev) => {
+      const next = new Map(prev);
+      for (const id of succeeded) next.delete(id);
+      return next;
+    });
+    setBusy(false);
+    if (errors.length === 0) {
+      Alert.alert('File traitee', `${succeeded.length} groupe(s) deplace(s).`);
+    } else {
+      Alert.alert(
+        'File traitee avec erreurs',
+        `OK : ${succeeded.length}\nEchecs : ${errors.length}\n\n` +
+          errors.map((e) => `- ${e.name} : ${e.msg.slice(0, 80)}`).join('\n')
+      );
+    }
+  }, [queued, clusters]);
+
   const updateClusterItems = useCallback((idx: number, kept: ClusterItem[]) => {
     setClusters((prev) => {
       const next = [...prev];
@@ -261,7 +324,7 @@ export default function TriApiScreen({ onBack }: Props) {
 
   if (phase === 'results') {
     return (
-      <ScrollView style={styles.screen}>
+      <ScrollView style={styles.screen} keyboardShouldPersistTaps="handled">
         <View style={styles.headerRow}>
           <TouchableOpacity onPress={onBack}>
             <Text style={styles.link}>← Retour</Text>
@@ -270,6 +333,29 @@ export default function TriApiScreen({ onBack }: Props) {
             {clusters.length} groupe(s) trouve(s) (IA)
           </Text>
         </View>
+        {queued.size > 0 && (
+          <View style={styles.queueBar}>
+            <Text style={styles.queueBarText}>
+              📦 {queued.size} groupe(s) en file
+            </Text>
+            <View style={styles.queueBarActions}>
+              <TouchableOpacity
+                style={styles.queueClearBtn}
+                onPress={() => setQueued(new Map())}
+                disabled={busy}
+              >
+                <Text style={styles.queueClearText}>Vider</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.queueFlushBtn, busy && styles.btnDisabled]}
+                onPress={flushAll}
+                disabled={busy}
+              >
+                <Text style={styles.queueFlushText}>Tout deplacer</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
         {clusters.length === 0 && (
           <Text style={styles.body}>
             Aucun groupe forme. Recommence avec d'autres photos.
@@ -277,13 +363,15 @@ export default function TriApiScreen({ onBack }: Props) {
         )}
         {clusters.map((c, idx) => (
           <ClusterCardApiWrapper
-            key={idx}
+            key={c.items[0]?.id ?? idx}
             apiCluster={c}
             index={idx + 1}
             albums={albums}
             onSeeAll={() => setOpenClusterIdx(idx)}
             onMove={(name) => moveClusterToAlbum(c, name)}
             onSkip={() => setClusters((prev) => prev.filter((_, i) => i !== idx))}
+            onQueue={(name) => queueCluster(c, name)}
+            queuedName={queued.get(c.items[0]?.id ?? '')}
             busy={busy}
           />
         ))}
@@ -363,6 +451,8 @@ function ClusterCardApiWrapper({
   onSeeAll,
   onMove,
   onSkip,
+  onQueue,
+  queuedName,
   busy,
 }: {
   apiCluster: ApiCluster;
@@ -371,6 +461,8 @@ function ClusterCardApiWrapper({
   onSeeAll: () => void;
   onMove: (name: string) => void;
   onSkip: () => void;
+  onQueue: (name: string) => void;
+  queuedName?: string;
   busy: boolean;
 }) {
   const cluster: Cluster = {
@@ -394,6 +486,8 @@ function ClusterCardApiWrapper({
       busy={busy}
       initialName={apiCluster.suggestedName}
       suggestedName={apiCluster.suggestedName}
+      onQueue={onQueue}
+      queuedName={queuedName}
     />
   );
 }
@@ -459,4 +553,33 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   progressFill: { height: '100%', backgroundColor: '#6c5ce7' },
+  queueBar: {
+    backgroundColor: 'rgba(0, 184, 148, 0.10)',
+    borderColor: '#00b894',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  queueBarText: { color: '#e4e6f0', fontWeight: '700', fontSize: 13 },
+  queueBarActions: { flexDirection: 'row', gap: 6 },
+  queueClearBtn: {
+    backgroundColor: '#252836',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#3a3f55',
+  },
+  queueClearText: { color: '#e4e6f0', fontSize: 12 },
+  queueFlushBtn: {
+    backgroundColor: '#00b894',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 4,
+  },
+  queueFlushText: { color: 'white', fontWeight: '700', fontSize: 12 },
 });

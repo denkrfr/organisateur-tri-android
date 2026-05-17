@@ -38,6 +38,13 @@ interface Props {
   // l'input. Tap = re-applique le nom (utile si l'user a modifie le champ
   // et veut revenir a la suggestion). Texte aussi selectable pour copy.
   suggestedName?: string;
+  // Mode batch (optionnel) : si onQueue est fourni, un bouton "+ Ajouter a
+  // la file" apparait sous les actions principales. L'user peut preparer
+  // plusieurs clusters puis tout deplacer en une fois depuis le banner du
+  // parent (1 popup d'autorisation Android au lieu de N).
+  // queuedName : si le cluster est deja en file, on affiche son nom; sinon undefined.
+  onQueue?: (albumName: string) => void;
+  queuedName?: string;
 }
 
 const MAX_SHOW = 6;
@@ -62,6 +69,8 @@ export default function ClusterCard({
   busy,
   initialName,
   suggestedName,
+  onQueue,
+  queuedName,
 }: Props) {
   const [name, setName] = useState(initialName ?? '');
   const [focused, setFocused] = useState(false);
@@ -208,6 +217,24 @@ export default function ClusterCard({
           <Text style={styles.skipText}>Ignorer</Text>
         </TouchableOpacity>
       </View>
+
+      {onQueue && (
+        <TouchableOpacity
+          style={[
+            styles.queueBtn,
+            !!queuedName && styles.queueBtnActive,
+            (busy || !canAct) && styles.queueBtnDisabled,
+          ]}
+          onPress={() => onQueue(targetName)}
+          disabled={busy || !canAct}
+        >
+          <Text style={styles.queueBtnText} numberOfLines={1}>
+            {queuedName
+              ? `✓ En file → "${queuedName}"  (tap pour mettre a jour)`
+              : '+ Ajouter a la file (deplacer plus tard en un coup)'}
+          </Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -335,4 +362,20 @@ const styles = StyleSheet.create({
   suggBannerText: { color: '#e4e6f0', fontSize: 13 },
   suggBannerName: { color: '#a29bfe', fontWeight: '700' },
   suggBannerHint: { color: '#8b8fa3', fontSize: 11, fontStyle: 'italic' },
+  queueBtn: {
+    marginTop: 6,
+    backgroundColor: '#252836',
+    borderColor: '#3a3f55',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+  },
+  queueBtnActive: {
+    backgroundColor: 'rgba(0, 184, 148, 0.18)',
+    borderColor: '#00b894',
+  },
+  queueBtnDisabled: { opacity: 0.4 },
+  queueBtnText: { color: '#e4e6f0', fontSize: 12, fontWeight: '600' },
 });
