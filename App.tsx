@@ -1453,12 +1453,19 @@ function ResultItemRow({
         transition={120}
       />
       <View style={{ flex: 1, marginLeft: 10 }}>
-        <Text style={styles.fileName} numberOfLines={1}>
-          {item.filename}
-        </Text>
+        <View style={styles.fileNameRow}>
+          <Text style={styles.fileName} numberOfLines={1}>
+            {item.filename}
+          </Text>
+          {isFirst && (
+            <View style={styles.keepBadge}>
+              <Text style={styles.keepBadgeText}>A GARDER</Text>
+            </View>
+          )}
+        </View>
         <Text style={styles.fileSize}>
           {fmtSize(item.fileSize)}
-          {isFirst && '   ·   le plus gros'}
+          {isFirst && '   ·   version la plus volumineuse, generalement l\'originale'}
         </Text>
       </View>
       <View style={[styles.checkbox, isSelected && styles.checkboxOn]}>
@@ -2233,6 +2240,24 @@ const styles = StyleSheet.create({
   groupKindText: {
     color: '#000',
     fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  // Badge "A GARDER" sur le plus volumineux d'un groupe doublons (match PC v1.1.x)
+  fileNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  keepBadge: {
+    backgroundColor: COLORS.ok,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  keepBadgeText: {
+    color: '#000',
+    fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
